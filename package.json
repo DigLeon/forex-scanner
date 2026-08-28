@@ -1,0 +1,24 @@
+{
+  "name": "market-data-twelve-data",
+  "version": "4.9.2",
+  "description": "Modular paper-analysis forex scanner with REST market data, SMC/MTF analysis, hard closed-candle confirmation gate, Telegram trade alerts and optional visual review.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "check": "node scripts/check.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "express": "5.2.1",
+    "multer": "2.2.0",
+    "node-fetch": "2.7.0",
+    "ws": "8.21.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

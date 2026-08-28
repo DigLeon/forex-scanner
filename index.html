@@ -1,0 +1,5734 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Forex Market Scanner</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        
+        body {
+            margin: 0;
+            background: #0b1120;
+            color: #e5e7eb;
+            font-family: Arial, sans-serif;
+        }
+        /* ======================================================
+           HEADER
+        ====================================================== */
+        
+        .header {
+            min-height: 74px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            padding: 14px 24px;
+            background: #111827;
+            border-bottom: 1px solid #263244;
+        }
+        
+        .title {
+            font-size: 24px;
+            font-weight: 900;
+        }
+        
+        .subtitle {
+            margin-top: 4px;
+            color: #94a3b8;
+            font-size: 12px;
+        }
+        
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .live {
+            color: #22c55e;
+            font-size: 12px;
+            font-weight: 900;
+        }
+        /* ======================================================
+           SCANNER
+        ====================================================== */
+        
+        .scanner {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 16px;
+            padding: 20px 24px;
+            background: #0f172a;
+        }
+        
+        #startScanner {
+            min-height: 44px;
+            padding: 0 24px;
+            color: white;
+            background: #2563eb;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 900;
+            cursor: pointer;
+        }
+        
+        #startScanner:hover {
+            background: #1d4ed8;
+        }
+        
+        #startScanner:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        #scannerStatus {
+            color: #cbd5e1;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+
+        .scanner-preferences {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-left: auto;
+        }
+
+        .scanner-preference {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 6px 8px;
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 7px;
+        }
+
+        .scanner-preference label {
+            color: #94a3b8;
+            font-size: 10px;
+            font-weight: 900;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .scanner-preference select {
+            min-height: 30px;
+            padding: 0 8px;
+            color: #e2e8f0;
+            background: #0f172a;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+        
+        .auto-scanner-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border: 1px solid rgba(34, 197, 94, 0.35);
+            border-radius: 20px;
+            background: rgba(34, 197, 94, 0.10);
+            color: #4ade80;
+            font-size: 11px;
+            font-weight: 900;
+        }
+        
+        .paper-badge {
+            padding: 5px 9px;
+            color: #fbbf24;
+            background: rgba(251, 191, 36, 0.12);
+            border: 1px solid rgba(251, 191, 36, 0.35);
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 900;
+        }
+        /* ======================================================
+           TABLE
+        ====================================================== */
+        
+        .scanner-table {
+            width: 100%;
+            padding: 0 8px 30px;
+            overflow-x: hidden;
+            background: #0f172a;
+        }
+        /* ======================================================
+   CURRENT MARKET SESSION
+====================================================== */
+        
+        .market-session-panel {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 0 8px 12px;
+            padding: 10px 12px;
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 8px;
+        }
+        
+        .market-session-title {
+            color: #94a3b8;
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+        }
+        
+        .market-session-name {
+            color: #60a5fa;
+            font-size: 13px;
+            font-weight: 900;
+        }
+        
+        .market-session-pairs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        
+        .market-pair-chip {
+            padding: 4px 7px;
+            color: #dbeafe;
+            background: rgba(59, 130, 246, 0.10);
+            border: 1px solid rgba(59, 130, 246, 0.30);
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 800;
+        }
+        
+        .market-session-off {
+            color: #f87171;
+            font-weight: 900;
+        }
+        
+        table {
+            width: 100%;
+            min-width: 0;
+            table-layout: fixed;
+            border-collapse: collapse;
+            background: #111827;
+            border: 1px solid #334155;
+        }
+        
+        thead {
+            background: #1e293b;
+        }
+        
+        th {
+            padding: 10px 4px;
+            color: #94a3b8;
+            border-bottom: 1px solid #334155;
+            text-align: center;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 0.2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        td {
+            padding: 12px 4px;
+            color: #e5e7eb;
+            border-bottom: 1px solid #263244;
+            font-size: 13px;
+            vertical-align: middle;
+            text-align: center;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        tbody tr.main-row:hover {
+            background: #172033;
+        }
+        
+        .pair-symbol {
+            color: #fff;
+            font-size: 14px;
+            font-weight: 900;
+        }
+        
+        .montreal-time {
+            margin-top: 4px;
+            color: #64748b;
+            font-size: 9px;
+        }
+        /* ======================================================
+           COLORS
+        ====================================================== */
+        
+        .green {
+            color: #4ade80;
+        }
+        
+        .yellow {
+            color: #facc15;
+        }
+        
+        .red {
+            color: #f87171;
+        }
+        
+        .gray {
+            color: #94a3b8;
+        }
+        
+        .signal-up {
+            color: #22c55e;
+            font-weight: 900;
+        }
+        
+        .signal-down {
+            color: #f87171;
+            font-weight: 900;
+        }
+        
+        .signal-none {
+            color: #94a3b8;
+            font-weight: 800;
+        }
+        
+        .signal-error {
+            color: #fb7185;
+            font-weight: 800;
+        }
+        /* ======================================================
+           BADGES
+        ====================================================== */
+        
+        .badge,
+        .entry-status,
+        .strength-badge,
+        .zone-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 5px 6px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        
+        .badge-green,
+        .entry-green,
+        .strength-green,
+        .zone-green {
+            color: #4ade80;
+            background: rgba(34, 197, 94, 0.12);
+            border: 1px solid rgba(34, 197, 94, 0.35);
+        }
+        
+        .badge-yellow,
+        .entry-yellow,
+        .strength-yellow,
+        .zone-yellow {
+            color: #facc15;
+            background: rgba(250, 204, 21, 0.10);
+            border: 1px solid rgba(250, 204, 21, 0.30);
+        }
+        
+        .badge-red,
+        .entry-red,
+        .strength-red,
+        .zone-red {
+            color: #f87171;
+            background: rgba(248, 113, 113, 0.10);
+            border: 1px solid rgba(248, 113, 113, 0.30);
+        }
+        
+        .badge-gray,
+        .strength-gray,
+        .zone-gray {
+            color: #94a3b8;
+            background: rgba(148, 163, 184, 0.08);
+            border: 1px solid #334155;
+        }
+        /* ======================================================
+           STRENGTH
+        ====================================================== */
+        
+        .strength-wrapper {
+            min-width: 0;
+            width: 100%;
+        }
+        
+        .strength-score {
+            margin-top: 4px;
+            color: #94a3b8;
+            font-size: 9px;
+        }
+        
+        .strength-bar {
+            width: 100%;
+            max-width: 78px;
+            height: 4px;
+            margin: 4px auto 0;
+            overflow: hidden;
+            background: #1e293b;
+            border-radius: 10px;
+        }
+        
+        .strength-fill {
+            height: 100%;
+            background: #3b82f6;
+            border-radius: 10px;
+        }
+        /* ======================================================
+           ENTRY PRICES
+        ====================================================== */
+        
+        .entry-price {
+            font-size: 14px;
+            color: #f8fafc;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        
+        .best-entry {
+            color: #4ade80;
+        }
+        
+        .last-entry {
+            color: #fbbf24;
+        }
+        
+        .optimal-zone {
+            color: #4ade80;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+        
+        .do-not-chase {
+            color: #f87171;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        
+        .small-secondary {
+            margin-top: 3px;
+            color: #64748b;
+            font-size: 10px;
+        }
+        /* ======================================================
+           SCORE
+        ====================================================== */
+        
+        .score-high {
+            color: #22c55e;
+            font-weight: 900;
+        }
+        
+        .score-medium {
+            color: #facc15;
+            font-weight: 900;
+        }
+        
+        .score-low {
+            color: #94a3b8;
+            font-weight: 800;
+        }
+        /* ======================================================
+           STRATEGY
+        ====================================================== */
+        
+        .strategy-chip {
+            display: inline-flex;
+            max-width: 100%;
+            padding: 4px 6px;
+            color: #dbeafe;
+            background: rgba(59, 130, 246, 0.12);
+            border: 1px solid rgba(59, 130, 246, 0.35);
+            border-radius: 10px;
+            font-size: 9px;
+            font-weight: 800;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* ======================================================
+           DETAILS
+        ====================================================== */
+        
+        .details-button {
+            padding: 6px 8px;
+            color: #dbeafe;
+            background: #1e3a5f;
+            border: 1px solid #3b82f6;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+        
+        .details-row {
+            display: none;
+        }
+        
+        .details-row.open {
+            display: table-row;
+        }
+        
+        .details-cell {
+            padding: 0;
+            background: #0b1324;
+            width: auto !important;
+            text-align: left;
+            overflow: visible;
+        }
+        
+        .details-wrapper {
+            padding: 20px;
+        }
+        
+        .details-grid {
+            display: grid;
+            grid-template-columns: repeat( auto-fit, minmax(280px, 1fr));
+            gap: 14px;
+        }
+        
+        .detail-card {
+            min-width: 0;
+            padding: 16px;
+            background: #111827;
+            border: 1px solid #263244;
+            border-radius: 9px;
+        }
+        
+        .detail-card h3 {
+            margin: 0 0 13px;
+            color: #f8fafc;
+            font-size: 13px;
+            text-transform: uppercase;
+        }
+        
+        .detail-line {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 8px 0;
+            color: #cbd5e1;
+            font-size: 12px;
+        }
+        
+        .detail-label {
+            color: #94a3b8;
+        }
+        
+        .detail-value {
+            color: #f1f5f9;
+            font-weight: 800;
+            text-align: right;
+            overflow-wrap: anywhere;
+        }
+        
+        .reason {
+            margin: 6px 0;
+            color: #86efac;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        
+        .warning {
+            margin: 6px 0;
+            color: #fca5a5;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+
+        .visual-review-card {
+            grid-column: 1 / -1;
+            border-color: #6d28d9;
+            background: rgba(124, 58, 237, 0.06);
+        }
+
+        .visual-review-note {
+            margin-bottom: 12px;
+            color: #94a3b8;
+            font-size: 11px;
+            line-height: 1.45;
+        }
+
+        .visual-upload-grid-inline {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .visual-upload-inline {
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+        }
+
+        .visual-upload-inline label {
+            display: block;
+            margin-bottom: 6px;
+            color: #c4b5fd;
+            font-size: 11px;
+            font-weight: 900;
+        }
+
+        .visual-upload-inline input {
+            width: 100%;
+            color: #cbd5e1;
+            font-size: 10px;
+        }
+
+        .visual-review-actions-inline {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+
+        .visual-review-analyze-inline {
+            min-height: 38px;
+            padding: 0 16px;
+            color: #ffffff;
+            background: #7c3aed;
+            border: 1px solid #a78bfa;
+            border-radius: 7px;
+            font-size: 11px;
+            font-weight: 900;
+            cursor: pointer;
+        }
+
+        .visual-review-analyze-inline:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .visual-review-status-inline {
+            color: #94a3b8;
+            font-size: 11px;
+        }
+
+        .visual-review-result-inline {
+            display: none;
+            margin-top: 14px;
+            padding: 12px;
+            background: #0b1324;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            color: #cbd5e1;
+            font-size: 11px;
+            line-height: 1.5;
+        }
+
+        .visual-review-result-inline.open {
+            display: block;
+        }
+
+        .visual-review-result-grid-inline {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .visual-review-result-box-inline {
+            padding: 10px;
+            background: #111827;
+            border: 1px solid #263244;
+            border-radius: 7px;
+        }
+
+        @media(max-width:1000px) {
+            .visual-upload-grid-inline {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media(max-width:600px) {
+            .visual-upload-grid-inline {
+                grid-template-columns: 1fr;
+            }
+        }
+        /* ======================================================
+           COMPACT COLUMN WIDTHS — 13 COLUMNS
+        ====================================================== */
+        
+        th:nth-child(1),
+        td:nth-child(1) {
+            width: 7%;
+        }
+        
+        th:nth-child(2),
+        td:nth-child(2) {
+            width: 8%;
+        }
+        
+        th:nth-child(3),
+        td:nth-child(3) {
+            width: 5%;
+        }
+        
+        th:nth-child(4),
+        td:nth-child(4) {
+            width: 6%;
+        }
+        
+        th:nth-child(5),
+        td:nth-child(5) {
+            width: 11%;
+        }
+        
+        th:nth-child(6),
+        td:nth-child(6) {
+            width: 9%;
+        }
+        
+        th:nth-child(7),
+        td:nth-child(7) {
+            width: 8%;
+        }
+        
+        th:nth-child(8),
+        td:nth-child(8) {
+            width: 10%;
+        }
+        
+        th:nth-child(9),
+        td:nth-child(9) {
+            width: 8%;
+        }
+        
+        th:nth-child(10),
+        td:nth-child(10) {
+            width: 9%;
+        }
+        
+        th:nth-child(11),
+        td:nth-child(11) {
+            width: 7%;
+        }
+        
+        th:nth-child(12),
+        td:nth-child(12) {
+            width: 6%;
+        }
+        
+        th:nth-child(13),
+        td:nth-child(13) {
+            width: 6%;
+        }
+        
+        @media(max-width:800px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .scanner,
+            .scanner-table {
+                padding-left: 8px;
+                padding-right: 8px;
+            }
+        }
+
+        /* v4.7.1 FRIENDLY SCAN DECISIONS */
+
+        .decision-summary {
+            display:grid;
+            grid-template-columns:repeat(5,minmax(115px,1fr));
+            gap:10px;
+            padding:14px 28px 2px;
+        }
+
+        .summary-card {
+            background:#111827;
+            border:1px solid #243247;
+            border-radius:10px;
+            padding:12px 16px;
+            display:flex;
+            flex-direction:column;
+            gap:3px;
+        }
+
+        .summary-card span { font-size:24px; font-weight:900; }
+        .summary-card small {
+            font-size:10px;
+            font-weight:900;
+            letter-spacing:.08em;
+            color:#94a3b8;
+            text-transform:uppercase;
+        }
+
+        .summary-pairs span { color:#60a5fa; }
+        .summary-shown span { color:#38bdf8; }
+        .summary-trade span { color:#34d399; }
+        .summary-wait span { color:#fbbf24; }
+        .summary-error span { color:#f87171; }
+
+        .decisions-panel {
+            margin:18px 28px 28px;
+            background:#0d1524;
+            border:1px solid #223047;
+            border-radius:12px;
+            overflow:hidden;
+        }
+
+        .decisions-header {
+            padding:16px 18px;
+            border-bottom:1px solid #223047;
+            display:flex;
+            align-items:flex-end;
+            justify-content:space-between;
+            gap:12px;
+        }
+
+        .decisions-title {
+            color:#f8fafc;
+            font-size:18px;
+            font-weight:950;
+        }
+
+        .decisions-subtitle {
+            margin-top:4px;
+            color:#94a3b8;
+            font-size:11px;
+            font-weight:600;
+        }
+
+        .decision-table-header,
+        .decision-item {
+            display:grid;
+            grid-template-columns:
+                minmax(92px,.8fr)
+                minmax(92px,.85fr)
+                minmax(95px,.85fr)
+                minmax(75px,.65fr)
+                minmax(105px,.9fr)
+                minmax(145px,1.2fr)
+                minmax(190px,1.7fr)
+                80px;
+            gap:10px;
+            align-items:center;
+        }
+
+        .decision-table-header {
+            padding:11px 14px;
+            background:#0a1220;
+            border-bottom:1px solid #223047;
+            color:#94a3b8;
+            font-size:9px;
+            font-weight:900;
+            text-transform:uppercase;
+            letter-spacing:.07em;
+        }
+
+        .decision-header-cell strong {
+            display:block;
+            margin-bottom:2px;
+            color:#cbd5e1;
+            font-size:10px;
+        }
+
+        .decision-list { padding:8px; }
+
+        .decision-item {
+            padding:12px 14px;
+            border:1px solid transparent;
+            border-radius:9px;
+            margin:5px 0;
+            background:#111827;
+            font-size:12px;
+        }
+
+        .decision-item:hover {
+            background:#142033;
+            border-color:#334155;
+        }
+
+        .decision-trade { border-left:3px solid #22c55e; }
+        .decision-wait { border-left:3px solid #f59e0b; }
+
+        .decision-pair {
+            font-weight:950;
+            color:#f8fafc;
+            font-size:13px;
+        }
+
+        .decision-badge {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:62px;
+            padding:6px 9px;
+            border-radius:7px;
+            font-size:11px;
+            font-weight:950;
+        }
+
+        .decision-trade .decision-badge {
+            color:#dcfce7;
+            background:rgba(34,197,94,.19);
+            border:1px solid rgba(34,197,94,.55);
+        }
+
+        .decision-wait .decision-badge {
+            color:#fef3c7;
+            background:rgba(245,158,11,.16);
+            border:1px solid rgba(245,158,11,.50);
+        }
+
+        .decision-direction { font-weight:950; }
+        .decision-direction.up { color:#4ade80; }
+        .decision-direction.down { color:#f87171; }
+
+        .decision-score { font-size:15px; font-weight:950; }
+        .decision-score.high { color:#4ade80; }
+        .decision-score.medium { color:#facc15; }
+        .decision-score.low { color:#fb7185; }
+
+        .decision-expiration {
+            color:#c084fc;
+            font-weight:900;
+            white-space:nowrap;
+        }
+
+        .decision-strategy {
+            color:#e2e8f0;
+            font-weight:700;
+            line-height:1.3;
+        }
+
+        .decision-reason {
+            color:#94a3b8;
+            line-height:1.35;
+        }
+
+        .decision-view-button {
+            width:100%;
+            padding:7px 8px;
+            color:#dbeafe;
+            background:#172033;
+            border:1px solid #475569;
+            border-radius:7px;
+            font-size:10px;
+            font-weight:900;
+            cursor:pointer;
+        }
+
+        .decision-view-button:hover {
+            color:#fff;
+            border-color:#60a5fa;
+            background:#1e293b;
+        }
+
+        .decision-empty {
+            padding:24px 16px;
+            text-align:center;
+            color:#64748b;
+        }
+
+        .decision-details-panel {
+            display:none;
+            margin:0 8px 10px;
+            padding:16px;
+            background:#0b1324;
+            border:1px solid #334155;
+            border-radius:10px;
+        }
+
+        .decision-details-panel.open { display:block; }
+
+        .decision-details-title {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:10px;
+            margin-bottom:12px;
+            color:#f8fafc;
+            font-size:14px;
+            font-weight:950;
+        }
+
+        .decision-details-close {
+            padding:5px 9px;
+            color:#94a3b8;
+            background:#111827;
+            border:1px solid #334155;
+            border-radius:6px;
+            cursor:pointer;
+        }
+
+        .decision-details-grid {
+            display:grid;
+            grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+            gap:10px;
+        }
+
+        .decision-details-card {
+            padding:10px;
+            background:#111827;
+            border:1px solid #263244;
+            border-radius:8px;
+            color:#94a3b8;
+            font-size:11px;
+            line-height:1.45;
+        }
+
+        .decision-details-card strong {
+            display:block;
+            margin-bottom:4px;
+            color:#e2e8f0;
+        }
+
+        /* Old signal table remains in DOM only for compatibility,
+           but is removed from the visible GUI. */
+        .scanner-table { display:none !important; }
+
+        @media(max-width:1100px) {
+            .decision-table-header { display:none; }
+
+            .decision-item {
+                grid-template-columns:100px 85px 90px 75px 110px 1fr;
+            }
+
+            .decision-strategy { display:none; }
+        }
+
+        @media(max-width:800px) {
+            .decision-summary {
+                grid-template-columns:repeat(2,1fr);
+                padding:12px 10px 2px;
+            }
+
+            .decisions-panel { margin:14px 10px 20px; }
+
+            .decisions-header {
+                align-items:flex-start;
+                flex-direction:column;
+            }
+
+            .decision-item {
+                grid-template-columns:1fr 90px 80px;
+                gap:8px;
+            }
+
+            .decision-direction,
+            .decision-expiration,
+            .decision-strategy { display:none; }
+
+            .decision-score { text-align:right; }
+
+            .decision-reason {
+                grid-column:1 / -1;
+                padding-top:2px;
+            }
+
+            .decision-view-button { width:auto; }
+        }
+
+        .score-equalizer{margin:14px 28px 0;padding:14px 16px;background:#0d1524;border:1px solid #223047;border-radius:12px}
+        .score-equalizer-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+        .score-equalizer-title{font-size:14px;font-weight:950;color:#f8fafc}
+        .score-equalizer-subtitle{font-size:10px;color:#94a3b8;margin-top:3px}
+        .score-total{padding:8px 10px;border:1px solid #334155;border-radius:8px;font-size:11px;font-weight:900}
+        .score-total.valid{color:#86efac;border-color:#22c55e}.score-total.invalid{color:#fca5a5;border-color:#ef4444}
+        .score-equalizer-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}
+        .score-weight-control{padding:10px;background:#111827;border:1px solid #263244;border-radius:9px}
+        .score-weight-label{display:flex;justify-content:space-between;color:#cbd5e1;font-size:11px;font-weight:900;margin-bottom:7px}
+        .score-weight-value{color:#60a5fa}.score-weight-control input{width:100%}
+        .score-equalizer-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+        .score-equalizer-button{padding:8px 12px;border:1px solid #475569;border-radius:7px;background:#172033;color:#dbeafe;font-size:10px;font-weight:900;cursor:pointer}
+        .score-equalizer-button.apply{background:#1d4ed8;border-color:#2563eb;color:white}
+        .score-equalizer-button:disabled{opacity:.45;cursor:not-allowed}
+
+        .score-presets{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px}
+        .score-preset-button{padding:7px 11px;border:1px solid #334155;border-radius:999px;background:#111827;color:#94a3b8;font-size:10px;font-weight:900;cursor:pointer}
+        .score-preset-button:hover{border-color:#60a5fa;color:#dbeafe}
+        .score-preset-button.active{background:#1d4ed8;border-color:#3b82f6;color:#fff}
+
+        .weak-setup-toggle{display:flex;align-items:center;gap:7px;padding:6px 8px;background:#111827;border:1px solid #334155;border-radius:7px}
+        .weak-setup-toggle label{color:#94a3b8;font-size:10px;font-weight:900;text-transform:uppercase;white-space:nowrap;cursor:pointer}
+        .weak-setup-toggle input{cursor:pointer}
+        .decision-watch{border-left:3px solid #38bdf8}
+        .decision-watch .decision-badge{color:#dbeafe;background:rgba(56,189,248,.16);border:1px solid rgba(56,189,248,.55)}
+
+        /* v4.8 simplified score controls */
+        .score-equalizer,
+        .legacy-min-score,
+        .weak-setup-toggle {
+            display:none !important;
+        }
+
+        .score-filter-control {
+            display:flex;
+            align-items:center;
+            gap:9px;
+            min-width:310px;
+            padding:6px 10px;
+            background:#111827;
+            border:1px solid #334155;
+            border-radius:7px;
+        }
+
+        .score-filter-control label {
+            color:#94a3b8;
+            font-size:10px;
+            font-weight:900;
+            text-transform:uppercase;
+            white-space:nowrap;
+        }
+
+        .score-filter-control input[type="range"] {
+            flex:1;
+            min-width:140px;
+            cursor:pointer;
+        }
+
+        #signalScoreFilterValue {
+            min-width:32px;
+            text-align:center;
+            color:#60a5fa;
+            font-size:13px;
+            font-weight:950;
+        }
+
+        .decision-candidate {
+            border-left:3px solid #38bdf8;
+        }
+
+        .decision-candidate .decision-badge {
+            color:#dbeafe;
+            background:rgba(56,189,248,.15);
+            border:1px solid rgba(56,189,248,.55);
+        }
+
+        .telegram-test-button{padding:8px 12px;border:1px solid #0ea5e9;border-radius:7px;background:#082f49;color:#e0f2fe;font-size:10px;font-weight:900;cursor:pointer}
+        .telegram-test-button:hover{background:#0c4a6e;border-color:#38bdf8}
+        .telegram-test-button:disabled{opacity:.55;cursor:not-allowed}
+
+    </style>
+
+</head>
+
+<body>
+
+
+    <div class="header">
+
+        <div>
+
+            <div class="title">
+                Forex Market Scanner
+            </div>
+
+            <div class="subtitle">
+                Multi-Timeframe Paper Analysis · v4.9.1 + Candle Gate
+            </div>
+
+        </div>
+
+
+        <div class="header-right">
+
+            <div class="live">
+                ● LIVE
+            </div>
+
+            <div class="paper-badge">
+                PAPER ANALYSIS
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <div class="scanner">
+
+        <button id="startScanner">
+            SCAN NOW
+        </button>
+
+
+        <button id="testTelegramButton" class="telegram-test-button">
+            TEST TELEGRAM
+        </button>
+
+        <div class="auto-scanner-badge">
+            ● REST MODE
+        </div>
+
+        <div id="scannerStatus">
+            Ready — press SCAN NOW
+        </div>
+
+
+        <div class="scanner-preferences">
+
+            <div class="scanner-preference legacy-min-score">
+                <label for="minScoreFilter">
+                    Minimum Signal Score
+                </label>
+
+                <select id="minScoreFilter">
+                    <option value="50" selected>50</option>
+                    <option value="60">60</option>
+                    <option value="70">70</option>
+                    <option value="80">80</option>
+                </select>
+            </div>
+
+
+            <div class="weak-setup-toggle">
+                <input id="showWeakSetups" type="checkbox">
+                <label for="showWeakSetups">
+                    Show WATCH 40+
+                </label>
+            </div>
+
+
+            <div class="score-filter-control">
+                <label for="signalScoreFilter">
+                    Signal Score Filter
+                </label>
+
+                <input
+                    id="signalScoreFilter"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="50"
+                >
+
+                <span id="signalScoreFilterValue">
+                    50
+                </span>
+            </div>
+
+
+            <div class="scanner-preference">
+                <label for="expirationDisplayMode">
+                    Expiration
+                </label>
+
+                <select id="expirationDisplayMode">
+                    <option value="time">Clock Time</option>
+                    <option value="minutes">Minutes</option>
+                </select>
+            </div>
+
+        </div>
+
+    </div>
+
+
+    </div>
+
+
+    <section class="score-equalizer">
+        <div class="score-equalizer-top">
+            <div><div class="score-equalizer-title">SCORE WEIGHTS</div>
+            <div class="score-equalizer-subtitle">How Final Score is calculated. Total must equal 100%.</div></div>
+            <div id="scoreWeightsTotal" class="score-total valid">TOTAL 100%</div>
+        </div>
+        <div class="score-presets">
+            <button type="button" class="score-preset-button" data-score-preset="aggressive">AGGRESSIVE</button>
+            <button type="button" class="score-preset-button active" data-score-preset="balanced">BALANCED</button>
+            <button type="button" class="score-preset-button" data-score-preset="conservative">CONSERVATIVE</button>
+            <button type="button" class="score-preset-button" data-score-preset="custom">CUSTOM</button>
+        </div>
+
+        <div class="score-equalizer-grid">
+            <div class="score-weight-control"><div class="score-weight-label"><span>Context</span><span id="contextWeightValue" class="score-weight-value">20%</span></div><input id="contextWeight" type="range" min="0" max="50" step="5" value="20"></div>
+            <div class="score-weight-control"><div class="score-weight-label"><span>Setup</span><span id="setupWeightValue" class="score-weight-value">30%</span></div><input id="setupWeight" type="range" min="0" max="50" step="5" value="30"></div>
+            <div class="score-weight-control"><div class="score-weight-label"><span>Entry</span><span id="entryWeightValue" class="score-weight-value">25%</span></div><input id="entryWeight" type="range" min="0" max="50" step="5" value="25"></div>
+            <div class="score-weight-control"><div class="score-weight-label"><span>Strategy</span><span id="strategyWeightValue" class="score-weight-value">15%</span></div><input id="strategyWeight" type="range" min="0" max="50" step="5" value="15"></div>
+            <div class="score-weight-control"><div class="score-weight-label"><span>Session</span><span id="sessionWeightValue" class="score-weight-value">10%</span></div><input id="sessionWeight" type="range" min="0" max="50" step="5" value="10"></div>
+        </div>
+        <div class="score-equalizer-actions">
+            <button id="resetScoreWeights" class="score-equalizer-button">RESET DEFAULT</button>
+            <button id="applyScoreWeights" class="score-equalizer-button apply">APPLY</button>
+        </div>
+    </section>
+
+    <div class="decision-summary" id="decisionSummary">
+        <div class="summary-card summary-pairs"><span id="pairCount">0</span><small>Pairs Scanned</small></div>
+        <div class="summary-card summary-shown"><span id="shownCount">0</span><small>Signals Shown</small></div>
+        <div class="summary-card summary-trade"><span id="tradeCount">0</span><small>TRADE</small></div>
+        <div class="summary-card summary-wait"><span id="waitCount">0</span><small>WAIT</small></div>
+        <div class="summary-card summary-error"><span id="errorCount">0</span><small>Errors</small></div>
+    </div>
+
+    <!-- ======================================================
+         CURRENT MARKET SESSION
+    ====================================================== -->
+
+    <div id="marketSessionPanel" class="market-session-panel">
+
+        <span class="market-session-title">
+            Market Session:
+        </span>
+
+
+        <span id="marketSessionName" class="market-session-name">
+            -
+        </span>
+
+
+        <div id="marketSessionPairs" class="market-session-pairs"></div>
+
+    </div>
+
+
+    <div class="scanner-table">
+
+        <table>
+
+            <thead>
+
+                <tr>
+
+                    <th>Pair</th>
+
+                    <th>Direction</th>
+
+                    <th>Confidence</th>
+
+                    <th>Best Entry</th>
+
+                    <th>Do Not Chase</th>
+
+                    <th>Entry</th>
+
+                    <th>Exp. Time</th>
+
+                    <th>Age</th>
+
+                    <th>Details</th>
+
+                </tr>
+
+            </thead>
+
+
+            <tbody id="scannerResults">
+
+                <tr>
+
+                    <td colspan="9" style="
+                            text-align:center;
+                            padding:30px;
+                            color:#64748b;
+                        ">
+                        Press SCAN NOW
+                    </td>
+
+                </tr>
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    <section class="decisions-panel">
+
+        <div class="decisions-header">
+            <div>
+                <div class="decisions-title">SCAN DECISIONS</div>
+                <div class="decisions-subtitle">
+                    TRADE / WAIT plus score candidates are shown. Use the 0–100 slider to filter by Score. SKIP is hidden.
+                </div>
+            </div>
+
+            <div class="decisions-subtitle">
+                New scan = fresh signal list
+            </div>
+        </div>
+
+        <div class="decision-table-header">
+            <div class="decision-header-cell"><strong>Pair</strong>Currency pair</div>
+            <div class="decision-header-cell"><strong>Decision</strong>Trade status</div>
+            <div class="decision-header-cell"><strong>Direction</strong>Market bias</div>
+            <div class="decision-header-cell"><strong>Score</strong>0–100</div>
+            <div class="decision-header-cell"><strong>Expiration</strong>Valid until</div>
+            <div class="decision-header-cell"><strong>Strategy</strong>Main setup</div>
+            <div class="decision-header-cell"><strong>Reason / Context</strong>Why it is shown</div>
+            <div class="decision-header-cell"><strong>Details</strong>More info</div>
+        </div>
+
+        <div id="decisionList" class="decision-list">
+            <div class="decision-empty">Run a scan to see current scored signals.</div>
+        </div>
+
+        <div id="decisionDetailsPanel" class="decision-details-panel"></div>
+
+    </section>
+
+
+    <script>
+        const scannerButton =
+            document.getElementById(
+                "startScanner"
+            );
+
+
+        const testTelegramButton =
+            document.getElementById(
+                "testTelegramButton"
+            );
+
+
+        const scannerStatus =
+            document.getElementById(
+                "scannerStatus"
+            );
+
+
+        const scannerResults =
+            document.getElementById(
+                "scannerResults"
+            );
+        const marketSessionName =
+            document.getElementById(
+                "marketSessionName"
+            );
+
+
+        const marketSessionPairs =
+            document.getElementById(
+                "marketSessionPairs"
+            );
+
+        const pairCount = document.getElementById("pairCount");
+        const shownCount = document.getElementById("shownCount");
+        const tradeCount = document.getElementById("tradeCount");
+        const waitCount = document.getElementById("waitCount");
+        const errorCount = document.getElementById("errorCount");
+        const decisionList = document.getElementById("decisionList");
+        const decisionDetailsPanel = document.getElementById("decisionDetailsPanel");
+        const scoreWeightsTotal=document.getElementById("scoreWeightsTotal");
+        const contextWeight=document.getElementById("contextWeight"), setupWeight=document.getElementById("setupWeight"), entryWeight=document.getElementById("entryWeight"), strategyWeight=document.getElementById("strategyWeight"), sessionWeight=document.getElementById("sessionWeight");
+        const contextWeightValue=document.getElementById("contextWeightValue"), setupWeightValue=document.getElementById("setupWeightValue"), entryWeightValue=document.getElementById("entryWeightValue"), strategyWeightValue=document.getElementById("strategyWeightValue"), sessionWeightValue=document.getElementById("sessionWeightValue");
+        const resetScoreWeights=document.getElementById("resetScoreWeights"), applyScoreWeights=document.getElementById("applyScoreWeights");
+
+
+
+        const minScoreFilter =
+            document.getElementById(
+                "minScoreFilter"
+            );
+
+
+        const expirationDisplayMode =
+            document.getElementById(
+                "expirationDisplayMode"
+            );
+
+
+        const signalScoreFilter =
+            document.getElementById(
+                "signalScoreFilter"
+            );
+
+
+        const signalScoreFilterValue =
+            document.getElementById(
+                "signalScoreFilterValue"
+            );
+
+
+        const showWeakSetups =
+            document.getElementById(
+                "showWeakSetups"
+            );
+
+
+        let lastResults = [];
+
+        let lastRawResults = [];
+
+        let lastRawDecisions = [];
+
+        let lastScanStats = {};
+
+        let lastScannedPairCount = 0;
+        const DEFAULT_SCORE_WEIGHTS={context:20,setup:30,entry:25,strategy:15,session:10};
+
+        const SCORE_PRESETS={
+            aggressive:{context:15,setup:30,entry:35,strategy:15,session:5},
+            balanced:{context:20,setup:30,entry:25,strategy:15,session:10},
+            conservative:{context:25,setup:30,entry:25,strategy:15,session:5}
+        };
+
+        let selectedScorePreset="balanced";
+        let appliedScoreWeights={...DEFAULT_SCORE_WEIGHTS};
+
+
+
+        // ======================================================
+        // DISPLAY PREFERENCES
+        // ======================================================
+
+        function loadDisplayPreferences() {
+
+            const savedScore =
+                Number(
+                    localStorage.getItem(
+                        "forexScannerMinScore"
+                    )
+                );
+
+
+            if (
+                [
+                    50,
+                    60,
+                    70,
+                    80
+                ]
+                .includes(
+                    savedScore
+                )
+            ) {
+
+                minScoreFilter.value =
+                    String(
+                        savedScore
+                    );
+
+
+            } else {
+
+                minScoreFilter.value =
+                    "50";
+            }
+
+
+            const savedExpirationMode =
+                localStorage.getItem(
+                    "forexScannerExpirationMode"
+                );
+
+
+            expirationDisplayMode.value =
+                savedExpirationMode ===
+                    "minutes"
+                    ?
+                    "minutes"
+                    :
+                    "time";
+
+
+            showWeakSetups.checked =
+                localStorage.getItem(
+                    "forexScannerShowWeakSetups"
+                ) ===
+                "1";
+        }
+
+
+        function getMinimumDisplayScore() {
+
+            const value =
+                Number(
+                    minScoreFilter.value
+                );
+
+
+            return [
+                50,
+                60,
+                70,
+                80
+            ]
+            .includes(
+                value
+            )
+                ?
+                value
+                :
+                50;
+        }
+
+
+        function getSignalScoreFilter() {
+
+            const value =
+                Number(
+                    signalScoreFilter.value
+                );
+
+
+            return Number.isFinite(
+                value
+            )
+                ?
+                Math.max(
+                    0,
+                    Math.min(
+                        100,
+                        value
+                    )
+                )
+                :
+                0;
+        }
+
+
+        function passesMinimumScoreFilter(
+            item
+        ) {
+
+            if (
+                !item
+            ) {
+
+                return false;
+            }
+
+
+            const signal =
+                String(
+                    item.signal ||
+                    ""
+                )
+                .toUpperCase();
+
+
+            if (
+                signal !==
+                    "UP" &&
+                signal !==
+                    "DOWN"
+            ) {
+
+                return false;
+            }
+
+
+            return (
+                Number(
+                    item.score
+                ) ||
+                0
+            ) >=
+                getSignalScoreFilter();
+        }
+
+
+        function sortResultsForDisplay(
+            results
+        ) {
+
+            return [
+                ...results
+            ]
+            .sort(
+                (
+                    a,
+                    b
+                ) => {
+
+                    const priorityA =
+                        Number(
+                            a.tradePriority &&
+                            typeof a.tradePriority ===
+                                "object"
+                                ?
+                                a.tradePriority.score
+                                :
+                                a.tradePriority
+                        ) ||
+                        0;
+
+
+                    const priorityB =
+                        Number(
+                            b.tradePriority &&
+                            typeof b.tradePriority ===
+                                "object"
+                                ?
+                                b.tradePriority.score
+                                :
+                                b.tradePriority
+                        ) ||
+                        0;
+
+
+                    if (
+                        priorityB !==
+                        priorityA
+                    ) {
+
+                        return (
+                            priorityB -
+                            priorityA
+                        );
+                    }
+
+
+                    return (
+                        Number(
+                            b.score
+                        ) ||
+                        0
+                    ) -
+                    (
+                        Number(
+                            a.score
+                        ) ||
+                        0
+                    );
+                }
+            );
+        }
+
+
+        function applyDisplayPreferences() {
+
+            const visibleResults =
+                sortResultsForDisplay(
+                    lastRawResults.filter(
+                        passesMinimumScoreFilter
+                    )
+                );
+
+
+            const visibleDecisions =
+                lastRawDecisions
+                    .filter(
+                        item =>
+                            item &&
+                            (
+                                item.action ===
+                                    "TRADE" ||
+                                item.action ===
+                                    "WAIT" ||
+                                item.action ===
+                                    "CANDIDATE"
+                            )
+                    )
+                    .filter(
+                        passesMinimumScoreFilter
+                    );
+
+
+            lastResults =
+                visibleResults;
+
+
+            renderDecisionSummary(
+                lastScanStats,
+                visibleDecisions,
+                visibleResults.length,
+                lastScannedPairCount
+            );
+
+
+            renderDecisions(
+                visibleDecisions
+            );
+        }
+
+
+        // ======================================================
+        // HELPERS
+        // ======================================================
+
+        function safeObject(
+            value
+        ) {
+
+            return (
+                    value &&
+                    typeof value ===
+                    "object"
+                ) ?
+                value : {};
+        }
+
+
+        function escapeHtml(
+            value
+        ) {
+
+            if (
+                value === null ||
+                value === undefined
+            ) {
+                return "";
+            }
+
+
+            return String(
+                    value
+                )
+                .replaceAll(
+                    "&",
+                    "&amp;"
+                )
+                .replaceAll(
+                    "<",
+                    "&lt;"
+                )
+                .replaceAll(
+                    ">",
+                    "&gt;"
+                )
+                .replaceAll(
+                    '"',
+                    "&quot;"
+                )
+                .replaceAll(
+                    "'",
+                    "&#039;"
+                );
+        }
+
+
+        function formatNumber(
+            value,
+            digits = 6
+        ) {
+
+            if (
+                value === null ||
+                value === undefined ||
+                value === ""
+            ) {
+                return "-";
+            }
+
+
+            const number =
+                Number(
+                    value
+                );
+
+
+            if (!Number.isFinite(
+                    number
+                )) {
+                return "-";
+            }
+
+
+            return number
+                .toFixed(
+                    digits
+                )
+                .replace(
+                    /0+$/,
+                    ""
+                )
+                .replace(
+                    /\.$/,
+                    ""
+                );
+        }
+
+
+        // ======================================================
+        // SIGNAL
+        // ======================================================
+
+        function getSignalClass(
+            signal
+        ) {
+
+            if (
+                signal ===
+                "UP"
+            ) {
+                return "signal-up";
+            }
+
+
+            if (
+                signal ===
+                "DOWN"
+            ) {
+                return "signal-down";
+            }
+
+
+            if (
+                signal ===
+                "ERROR"
+            ) {
+                return "signal-error";
+            }
+
+
+            return "signal-none";
+        }
+
+
+        function getScoreClass(
+            score
+        ) {
+
+            const value =
+                Number(
+                    score
+                ) || 0;
+
+
+            if (
+                value >=
+                65
+            ) {
+                return "score-high";
+            }
+
+
+            if (
+                value >=
+                50
+            ) {
+                return "score-medium";
+            }
+
+
+            return "score-low";
+        }
+
+
+        // ======================================================
+        // GENERIC COLOR
+        // ======================================================
+
+        function getColorClass(
+            color,
+            prefix
+        ) {
+
+            const value =
+                String(
+                    color ||
+                    ""
+                )
+                .toUpperCase();
+
+
+            if (
+                value ===
+                "GREEN"
+            ) {
+                return `${prefix}-green`;
+            }
+
+
+            if (
+                value ===
+                "RED"
+            ) {
+                return `${prefix}-red`;
+            }
+
+
+            if (
+                value ===
+                "YELLOW"
+            ) {
+                return `${prefix}-yellow`;
+            }
+
+
+            return `${prefix}-gray`;
+        }
+
+
+        // ======================================================
+        // SESSION
+        // ======================================================
+
+        function getSessionClass(
+            status
+        ) {
+
+            const value =
+                String(
+                    status || ""
+                )
+                .toUpperCase();
+
+
+            if (
+                value.includes(
+                    "GOOD"
+                ) ||
+                value.includes(
+                    "BEST"
+                ) ||
+                value.includes(
+                    "ACTIVE"
+                )
+            ) {
+                return "badge-green";
+            }
+
+
+            if (
+                value.includes(
+                    "QUIET"
+                ) ||
+                value.includes(
+                    "CAUTION"
+                )
+            ) {
+                return "badge-yellow";
+            }
+
+
+            if (
+                value.includes(
+                    "BAD"
+                ) ||
+                value.includes(
+                    "CLOSED"
+                )
+            ) {
+                return "badge-red";
+            }
+
+
+            return "badge-gray";
+        }
+
+
+        // ======================================================
+        // ENTRY ENGINE
+        // ======================================================
+
+        function getEntryClass(
+            entryEngine
+        ) {
+
+            return getColorClass(
+                entryEngine &&
+                entryEngine.color,
+                "entry"
+            );
+        }
+
+
+        // ======================================================
+        // SHORT TIMING
+        // ======================================================
+
+        function shortTiming(
+            status
+        ) {
+
+            const value =
+                String(
+                    status || ""
+                )
+                .toUpperCase();
+
+
+            const map = {
+
+                "ENTER NOW": "ENTER",
+
+                "WAIT FOR CANDLE": "CANDLE",
+
+                "WAIT FOR RETEST": "RETEST",
+
+                "WAIT FOR CONFIRMATION": "WAIT",
+
+                "CAUTION": "CAUTION",
+
+                "MISSED": "MISSED",
+
+                "TOO LATE": "TOO LATE"
+            };
+
+
+            return (
+                map[value] ||
+                status ||
+                "-"
+            );
+        }
+
+
+        // ======================================================
+        // SHORT STRATEGY
+        // ======================================================
+
+        function shortStrategy(
+            name
+        ) {
+
+            const value =
+                String(
+                    name || ""
+                )
+                .toUpperCase();
+
+
+            if (
+                value.includes(
+                    "TREND"
+                )
+            ) {
+                return "TREND";
+            }
+
+
+            if (
+                value.includes(
+                    "LIQUIDITY"
+                )
+            ) {
+                return "SWEEP";
+            }
+
+
+            if (
+                value.includes(
+                    "ORDER BLOCK"
+                )
+            ) {
+                return "OB";
+            }
+
+
+            if (
+                value.includes(
+                    "FVG"
+                ) ||
+                value.includes(
+                    "IMBALANCE"
+                )
+            ) {
+                return "FVG";
+            }
+
+
+            if (
+                value.includes(
+                    "PULLBACK"
+                )
+            ) {
+                return "PULLBACK";
+            }
+
+
+            if (
+                value.includes(
+                    "BREAKOUT"
+                )
+            ) {
+                return "BREAKOUT";
+            }
+
+
+            if (
+                value.includes(
+                    "REVERSAL"
+                )
+            ) {
+                return "REVERSAL";
+            }
+
+
+            return (
+                name ||
+                "-"
+            );
+        }
+        // ======================================================
+        // SIGNAL STRENGTH
+        // ======================================================
+
+        function buildSignalStrength(
+            result
+        ) {
+
+            const strength =
+                safeObject(
+                    result.signalStrength
+                );
+
+
+            if (
+                result.signal ===
+                "NO SIGNAL" ||
+                !strength.recommendation
+            ) {
+
+                return `
+                    <span class="
+                        strength-badge
+                        strength-gray
+                    ">
+                        NO SIGNAL
+                    </span>
+                `;
+            }
+
+
+            const score =
+                Math.max(
+                    0,
+                    Math.min(
+                        100,
+                        Number(
+                            strength.score
+                        ) || 0
+                    )
+                );
+
+
+            return `
+                <div class="strength-wrapper">
+
+                    <span
+                        class="
+                            strength-badge
+                            ${getColorClass(
+                                strength.color,
+                                "strength"
+                            )}
+                        "
+                    >
+                        ●
+                        ${escapeHtml(
+                            strength.level ||
+                            "-"
+                        )}
+                    </span>
+
+                    <div class="strength-score">
+                        ${score}/100
+                    </div>
+
+                    <div class="strength-bar">
+                        <div
+                            class="strength-fill"
+                            style="width:${score}%"
+                        ></div>
+                    </div>
+
+                    <div class="small-secondary">
+                        ${escapeHtml(
+                            strength.recommendation ||
+                            "-"
+                        )}
+                    </div>
+
+                </div>
+            `;
+        }
+
+
+        // ======================================================
+        // ENTRY ZONE STATUS
+        // ======================================================
+
+        function buildEntryZoneStatus(
+            result
+        ) {
+
+            const zone =
+                safeObject(
+                    result.entryZone
+                );
+
+
+            if (!zone.available) {
+
+                return `
+                    <span class="
+                        zone-badge
+                        zone-gray
+                    ">
+                        -
+                    </span>
+                `;
+            }
+
+
+            return `
+                <span
+                    class="
+                        zone-badge
+                        ${getColorClass(
+                            zone.color,
+                            "zone"
+                        )}
+                    "
+                >
+                    ${escapeHtml(
+                        zone.status ||
+                        "-"
+                    )}
+                </span>
+            `;
+        }
+
+
+        // ======================================================
+        // SIGNAL AGE
+        // ======================================================
+
+        function formatSignalAge(
+            signalAge
+        ) {
+
+            const safeAge =
+                safeObject(
+                    signalAge
+                );
+
+
+            if (
+                safeAge.seconds === null ||
+                safeAge.seconds === undefined
+            ) {
+                return "-";
+            }
+
+
+            return `
+                ${escapeHtml(
+                    safeAge.seconds
+                )} sec
+
+                <div class="small-secondary">
+                    ${escapeHtml(
+                        safeAge.status ||
+                        "-"
+                    )}
+                </div>
+            `;
+        }
+
+
+        // ======================================================
+        // EXPIRATION
+        // ======================================================
+
+        function formatClockTimeMontreal(
+            value
+        ) {
+
+            if (
+                !value
+            ) {
+
+                return "-";
+            }
+
+
+            const date =
+                new Date(
+                    value
+                );
+
+
+            if (
+                Number.isNaN(
+                    date.getTime()
+                )
+            ) {
+
+                return "-";
+            }
+
+
+            return date.toLocaleTimeString(
+                "en-CA",
+                {
+                    timeZone:
+                        "America/Toronto",
+
+                    hour:
+                        "2-digit",
+
+                    minute:
+                        "2-digit",
+
+                    second:
+                        "2-digit",
+
+                    hour12:
+                        false
+                }
+            );
+        }
+
+
+        function formatRemainingExpiration(
+            expirationAt
+        ) {
+
+            const targetMs =
+                Date.parse(
+                    expirationAt
+                );
+
+
+            if (
+                !Number.isFinite(
+                    targetMs
+                )
+            ) {
+
+                return "";
+            }
+
+
+            const seconds =
+                Math.max(
+                    0,
+                    Math.floor(
+                        (
+                            targetMs -
+                            Date.now()
+                        ) /
+                        1000
+                    )
+                );
+
+
+            const minutes =
+                Math.floor(
+                    seconds /
+                    60
+                );
+
+
+            const secs =
+                seconds %
+                60;
+
+
+            return `${minutes}m ${String(secs).padStart(2, "0")}s left`;
+        }
+
+
+        // ======================================================
+        // EXPIRATION
+        // ======================================================
+
+        function formatExpiration(
+            result
+        ) {
+
+            const expirationAt =
+                result.expirationAt ||
+                null;
+
+
+            if (
+                !expirationAt
+            ) {
+
+                return "-";
+            }
+
+
+            const mode =
+                expirationDisplayMode
+                    ?
+                    expirationDisplayMode.value
+                    :
+                    "time";
+
+
+            if (
+                mode ===
+                    "minutes"
+            ) {
+
+                const targetMs =
+                    Date.parse(
+                        expirationAt
+                    );
+
+
+                if (
+                    !Number.isFinite(
+                        targetMs
+                    )
+                ) {
+
+                    return "-";
+                }
+
+
+                const seconds =
+                    Math.max(
+                        0,
+                        Math.floor(
+                            (
+                                targetMs -
+                                Date.now()
+                            ) /
+                            1000
+                        )
+                    );
+
+
+                const minutes =
+                    Math.floor(
+                        seconds /
+                        60
+                    );
+
+
+                const secs =
+                    seconds %
+                    60;
+
+
+                return `
+                    <strong>
+                        ${minutes}m ${String(secs).padStart(2, "0")}s
+                    </strong>
+
+                    <div class="small-secondary">
+                        remaining
+                    </div>
+                `;
+            }
+
+
+            return `
+                <strong>
+                    ${escapeHtml(
+                        formatClockTimeMontreal(
+                            expirationAt
+                        )
+                    )}
+                </strong>
+
+                <div class="small-secondary">
+                    Montreal
+                </div>
+            `;
+        }
+
+
+        // ======================================================
+        // STRATEGY
+        // ======================================================
+
+        function buildStrategy(
+            result
+        ) {
+
+            const primary =
+                safeObject(
+                    result.primaryStrategy
+                );
+
+
+            if (!primary.name) {
+
+                return `
+                    <span class="strategy-chip">
+                        -
+                    </span>
+                `;
+            }
+
+
+            return `
+                <span class="strategy-chip">
+                    ${escapeHtml(
+                        shortStrategy(
+                            primary.name
+                        )
+                    )}
+                </span>
+            `;
+        }
+
+
+        // ======================================================
+        // TRANSLATE ENTRY STATUS
+        // ======================================================
+
+        function translateEntryQuality(
+            value
+        ) {
+
+            const text =
+                String(
+                    value || ""
+                )
+                .toUpperCase();
+
+
+            const translations = {
+
+                "BEST ENTRY": "ЛУЧШИЙ ВХОД",
+
+                "BEST ENTRY ZONE": "ЛУЧШАЯ ЗОНА ВХОДА",
+
+                "GOOD ENTRY": "ХОРОШИЙ ВХОД",
+
+                "ACCEPTABLE": "ДОПУСТИМЫЙ ВХОД",
+
+                "BAD ENTRY": "ПЛОХОЙ ВХОД",
+
+                "WORST ENTRY / DO NOT ENTER": "ХУДШАЯ ТОЧКА — НЕ ВХОДИТЬ",
+
+                "WAIT FOR BEST ENTRY": "ЖДАТЬ ЛУЧШУЮ ТОЧКУ",
+
+                "WAIT FOR RETEST": "ЖДАТЬ РЕТЕСТ",
+
+                "WAIT FOR CONFIRMATION": "ЖДАТЬ ПОДТВЕРЖДЕНИЕ",
+
+                "WAIT FOR CANDLE": "ЖДАТЬ ПОДТВЕРЖДЕНИЕ СВЕЧИ",
+
+                "ENTER NOW": "ВХОД ПОДТВЕРЖДЁН",
+
+                "CAUTION": "ОСТОРОЖНО",
+
+                "MISSED": "ТОЧКА ВХОДА ПРОПУЩЕНА",
+
+                "TOO LATE": "СЛИШКОМ ПОЗДНО",
+
+                "NO SIGNAL": "НЕТ СИГНАЛА"
+            };
+
+
+            return (
+                translations[text] ||
+                value ||
+                "-"
+            );
+        }
+
+
+        // ======================================================
+        // TRANSLATE RECOMMENDATION
+        // ======================================================
+
+        function translateRecommendation(
+            value
+        ) {
+
+            const text =
+                String(
+                    value || ""
+                )
+                .toUpperCase();
+
+
+            const translations = {
+
+                "RECOMMENDED": "РЕКОМЕНДУЕТСЯ",
+
+                "RECOMMENDED WITH CAUTION": "МОЖНО, НО С ОСТОРОЖНОСТЬЮ",
+
+                "WAIT / CAUTION": "ПОДОЖДАТЬ / ОСТОРОЖНО",
+
+                "NOT RECOMMENDED": "НЕ РЕКОМЕНДУЕТСЯ"
+            };
+
+
+            return (
+                translations[text] ||
+                value ||
+                "-"
+            );
+        }
+
+
+        // ======================================================
+        // TRANSLATE SIGNAL STRENGTH
+        // ======================================================
+
+        function translateStrength(
+            value
+        ) {
+
+            const text =
+                String(
+                    value || ""
+                )
+                .toUpperCase();
+
+
+            const translations = {
+
+                "STRONG": "СИЛЬНЫЙ",
+
+                "GOOD": "ХОРОШИЙ",
+
+                "MODERATE": "СРЕДНИЙ",
+
+                "WEAK": "СЛАБЫЙ",
+
+                "LATE": "ПОЗДНИЙ",
+
+                "NO SIGNAL": "НЕТ СИГНАЛА"
+            };
+
+
+            return (
+                translations[text] ||
+                value ||
+                "-"
+            );
+        }
+
+
+        // ======================================================
+        // TRANSLATE MESSAGES
+        // ======================================================
+
+        function translateMessage(
+            message
+        ) {
+
+            if (!message) {
+                return "-";
+            }
+
+
+            const text =
+                String(
+                    message
+                );
+
+
+            const translations = {
+
+                "No confirmed market signal": "Нет подтверждённого рыночного сигнала",
+
+                "Price is inside the preferred entry zone": "Цена находится внутри оптимальной зоны входа",
+
+                "A structural retest can improve the entry": "Структурный ретест может дать более качественную точку входа",
+
+                "Price is beyond the last acceptable entry": "Цена уже прошла последнюю допустимую точку входа",
+
+                "15M / 5M setup is strong": "Сетап на 15M / 5M сильный",
+
+                "3M / 1M entry layer supports the signal": "Таймфреймы 3M / 1M подтверждают направление сигнала",
+
+                "Higher-timeframe imbalance confluence is present": "Есть подтверждение Imbalance / FVG со старших таймфреймов",
+
+                "Directional imbalance / FVG quality is strong": "Качество Imbalance / FVG по направлению сигнала высокое",
+
+                "Signal timing data is fresh": "Данные для входа свежие",
+
+                "Higher-timeframe context conflicts with setup": "Контекст старших таймфреймов конфликтует с текущим сетапом",
+
+                "Entry timing still needs confirmation": "Точка входа пока требует дополнительного подтверждения",
+
+                "Signal timing data is stale": "Данные для определения точки входа устарели",
+
+                "Low-volatility regime can reduce follow-through": "Низкая волатильность может уменьшить продолжение движения",
+
+                "Entry direction is aligned, but entry quality is still weak": "Направление совпадает с сигналом, но качество входа пока слабое",
+
+                "Entry confirmation is moderate": "Подтверждение точки входа пока среднее",
+
+                "Signal confirmed and lower-timeframe entry is aligned": "Сигнал подтверждён, младшие таймфреймы согласованы",
+
+                "No confirmed market setup": "Подтверждённого рыночного сетапа пока нет",
+
+                "Market data is too old for entry timing": "Данные слишком старые для точного определения момента входа",
+
+                "Market signal may still be valid, but 1M / 3M timing data is delayed": "Сам сигнал ещё может быть актуален, но данные 1M / 3M запаздывают",
+
+                "1H / 30M context conflicts with signal": "Контекст 1H / 30M противоречит направлению сигнала",
+
+                "15M / 5M setup conflicts with signal": "Сетап 15M / 5M противоречит направлению сигнала",
+
+                "Waiting for bullish 1M / 3M closed-candle confirmation": "Ждём подтверждение закрытой бычьей свечой на 1M / 3M",
+
+                "Waiting for bearish 1M / 3M closed-candle confirmation": "Ждём подтверждение закрытой медвежьей свечой на 1M / 3M",
+
+                "Lower timeframe is moving against the signal; waiting for pullback/retest to resolve": "Младший таймфрейм движется против сигнала. Ждём окончания отката или ретеста",
+
+                "Price is outside the preferred entry zone": "Цена находится вне оптимальной зоны входа",
+
+                "Entry quality is poor; price is between LAST ACCEPTABLE and WORST ENTRY": "Качество входа низкое: цена находится между последней допустимой и худшей точкой",
+
+                "Price has left the ideal zone but is still close to the best entry": "Цена вышла из идеальной зоны, но всё ещё рядом с лучшей точкой",
+
+                "Entry is still acceptable, but the price is approaching the last acceptable level": "Вход пока допустим, но цена приближается к последней допустимой границе",
+
+                "Wait for price to reach the preferred entry zone": "Ждём, пока цена достигнет оптимальной зоны входа"
+            };
+
+
+            if (
+                translations[text]
+            ) {
+                return translations[text];
+            }
+
+
+            if (
+                text.includes(
+                    "Do not enter UP"
+                )
+            ) {
+
+                return (
+                    "НЕ ВХОДИТЬ В UP. " +
+                    "Цена достигла или прошла худшую допустимую точку."
+                );
+            }
+
+
+            if (
+                text.includes(
+                    "Do not enter DOWN"
+                )
+            ) {
+
+                return (
+                    "НЕ ВХОДИТЬ В DOWN. " +
+                    "Цена достигла или прошла худшую допустимую точку."
+                );
+            }
+
+
+            if (
+                text.includes(
+                    "Best UP entry is near"
+                )
+            ) {
+
+                return (
+                    "Цена ещё не достигла лучшей точки UP. " +
+                    "Ждём рассчитанный уровень."
+                );
+            }
+
+
+            if (
+                text.includes(
+                    "Best DOWN entry is near"
+                )
+            ) {
+
+                return (
+                    "Цена ещё не достигла лучшей точки DOWN. " +
+                    "Ждём рассчитанный уровень."
+                );
+            }
+
+
+            return text;
+        }
+
+
+        // ======================================================
+        // BUILD RUSSIAN MESSAGES
+        // ======================================================
+
+        function buildRussianMessages(
+            items,
+            type
+        ) {
+
+            if (!Array.isArray(
+                    items
+                ) ||
+                items.length === 0
+            ) {
+
+                return `
+                    <div class="small-secondary">
+                        Нет
+                    </div>
+                `;
+            }
+
+
+            return items
+                .map(
+                    item => `
+                        <div class="${type}">
+                            • ${escapeHtml(
+                                translateMessage(
+                                    item
+                                )
+                            )}
+                        </div>
+                    `
+                )
+                .join("");
+        }
+
+
+        // ======================================================
+        // VISUAL REVIEW INSIDE DETAILS
+        // ======================================================
+
+        function buildVisualReviewWidget(
+            result,
+            index
+        ) {
+
+            return `
+                <div class="detail-card visual-review-card">
+
+                    <h3>
+                        📷 Visual Chart Review
+                    </h3>
+
+                    <div class="visual-review-note">
+                        Добавь скриншоты 1m, 3m, 5m, 15m и 30m этой валютной пары.
+                        После загрузки нажми ANALYZE SCREENSHOTS.
+                        Система сравнит визуальный анализ с текущим анализом по данным.
+                    </div>
+
+                    <div class="visual-upload-grid-inline">
+
+                        <div class="visual-upload-inline">
+                            <label>1 MINUTE</label>
+                            <input id="visual-${index}-m1" type="file" accept="image/png,image/jpeg,image/webp">
+                        </div>
+
+                        <div class="visual-upload-inline">
+                            <label>3 MINUTES</label>
+                            <input id="visual-${index}-m3" type="file" accept="image/png,image/jpeg,image/webp">
+                        </div>
+
+                        <div class="visual-upload-inline">
+                            <label>5 MINUTES</label>
+                            <input id="visual-${index}-m5" type="file" accept="image/png,image/jpeg,image/webp">
+                        </div>
+
+                        <div class="visual-upload-inline">
+                            <label>15 MINUTES</label>
+                            <input id="visual-${index}-m15" type="file" accept="image/png,image/jpeg,image/webp">
+                        </div>
+
+                        <div class="visual-upload-inline">
+                            <label>30 MINUTES</label>
+                            <input id="visual-${index}-m30" type="file" accept="image/png,image/jpeg,image/webp">
+                        </div>
+
+                    </div>
+
+                    <div class="visual-review-actions-inline">
+
+                        <button
+                            class="visual-review-analyze-inline"
+                            data-index="${index}"
+                        >
+                            ANALYZE SCREENSHOTS
+                        </button>
+
+                        <span
+                            id="visual-${index}-status"
+                            class="visual-review-status-inline"
+                        >
+                            Выбери все 5 скриншотов
+                        </span>
+
+                    </div>
+
+                    <div
+                        id="visual-${index}-result"
+                        class="visual-review-result-inline"
+                    ></div>
+
+                </div>
+            `;
+        }
+
+
+        function buildVisualReviewResultHtml(
+            data
+        ) {
+
+            const visual =
+                safeObject(
+                    data.visualAnalysis
+                );
+
+
+            const fusion =
+                safeObject(
+                    data.fusionReview
+                );
+
+
+            const timeframes =
+                safeObject(
+                    visual.timeframes
+                );
+
+
+            return `
+                <div>
+                    <strong>${escapeHtml(data.symbol || "-")}</strong>
+                    — Visual:
+                    <strong>${escapeHtml(visual.visualDirection || "-")}</strong>
+                    (${escapeHtml(visual.confidence ?? "-")}/100)
+                </div>
+
+                <div class="visual-review-result-grid-inline">
+
+                    <div class="visual-review-result-box-inline">
+                        <strong>Comparison</strong><br>
+                        Alignment: ${escapeHtml(visual.alignment || "-")}<br>
+                        Entry context: ${escapeHtml(visual.entryContext || "-")}<br>
+                        Review: ${escapeHtml(fusion.reviewStatus || "-")}
+                    </div>
+
+                    <div class="visual-review-result-box-inline">
+                        <strong>Timeframes</strong><br>
+                        30m: ${escapeHtml(timeframes["30m"] || "-")}<br>
+                        15m: ${escapeHtml(timeframes["15m"] || "-")}<br>
+                        5m: ${escapeHtml(timeframes["5m"] || "-")}<br>
+                        3m: ${escapeHtml(timeframes["3m"] || "-")}<br>
+                        1m: ${escapeHtml(timeframes["1m"] || "-")}
+                    </div>
+
+                    <div class="visual-review-result-box-inline">
+                        <strong>Entry Limits</strong><br>
+                        Best: ${formatNumber(fusion.bestEntryPrice)}<br>
+                        Last: ${formatNumber(fusion.lastAcceptablePrice)}<br>
+                        Do Not Chase: ${formatNumber(fusion.doNotChasePrice)}
+                    </div>
+
+                </div>
+
+                <div style="margin-top:10px;">
+                    <strong>Summary:</strong>
+                    ${escapeHtml(visual.summary || "-")}
+                </div>
+
+                ${
+                    fusion.hardBlock
+                        ?
+                        `
+                        <div class="warning" style="margin-top:10px;font-weight:900;">
+                            HARD BLOCK: visual review cannot override TOO LATE / DO NOT CHASE.
+                        </div>
+                        `
+                        :
+                        ""
+                }
+            `;
+        }
+
+
+        async function analyzeVisualReviewInline(
+            index
+        ) {
+
+            const result =
+                lastResults[
+                    index
+                ];
+
+
+            if (
+                !result ||
+                !result.symbol
+            ) {
+
+                return;
+            }
+
+
+            const fields =
+                [
+                    "m1",
+                    "m3",
+                    "m5",
+                    "m15",
+                    "m30"
+                ];
+
+
+            const inputs = {};
+
+
+            fields.forEach(
+                field => {
+
+                    inputs[field] =
+                        document.getElementById(
+                            `visual-${index}-${field}`
+                        );
+                }
+            );
+
+
+            const missing =
+                fields.filter(
+                    field =>
+                        !inputs[field] ||
+                        !inputs[field].files ||
+                        !inputs[field].files[0]
+                );
+
+
+            const status =
+                document.getElementById(
+                    `visual-${index}-status`
+                );
+
+
+            const resultBox =
+                document.getElementById(
+                    `visual-${index}-result`
+                );
+
+
+            const button =
+                document.querySelector(
+                    `.visual-review-analyze-inline[data-index="${index}"]`
+                );
+
+
+            if (
+                missing.length
+            ) {
+
+                if (
+                    status
+                ) {
+
+                    status.textContent =
+                        `Не хватает: ${missing.join(", ")}`;
+                }
+
+
+                return;
+            }
+
+
+            const form =
+                new FormData();
+
+
+            fields.forEach(
+                field => {
+
+                    form.append(
+                        field,
+                        inputs[field].files[0]
+                    );
+                }
+            );
+
+
+            if (
+                button
+            ) {
+
+                button.disabled =
+                    true;
+
+
+                button.textContent =
+                    "ANALYZING...";
+            }
+
+
+            if (
+                status
+            ) {
+
+                status.textContent =
+                    "Загружаю и сравниваю с текущим анализом...";
+            }
+
+
+            try {
+
+                const response =
+                    await fetch(
+                        `/api/visual-review/${encodeURIComponent(result.symbol)}`,
+                        {
+                            method:
+                                "POST",
+
+                            body:
+                                form
+                        }
+                    );
+
+
+                const data =
+                    await response.json();
+
+
+                if (
+                    !response.ok ||
+                    data.status !==
+                        "ok"
+                ) {
+
+                    throw new Error(
+                        data.error ||
+                        `HTTP ${response.status}`
+                    );
+                }
+
+
+                result.visualReview =
+                    data;
+
+
+                if (
+                    resultBox
+                ) {
+
+                    resultBox.innerHTML =
+                        buildVisualReviewResultHtml(
+                            data
+                        );
+
+
+                    resultBox.classList.add(
+                        "open"
+                    );
+                }
+
+
+                if (
+                    status
+                ) {
+
+                    status.textContent =
+                        "Visual analysis complete";
+                }
+
+
+            } catch (
+                error
+            ) {
+
+                if (
+                    status
+                ) {
+
+                    status.textContent =
+                        `Ошибка: ${error.message}`;
+                }
+
+
+            } finally {
+
+                if (
+                    button
+                ) {
+
+                    button.disabled =
+                        false;
+
+
+                    button.textContent =
+                        "ANALYZE SCREENSHOTS";
+                }
+            }
+        }
+
+
+        // ======================================================
+        // DETAILS
+        // ======================================================
+
+        function buildDetails(
+            result,
+            index
+        ) {
+
+            const entryEngine =
+                safeObject(
+                    result.entryEngine
+                );
+
+
+            const entryZone =
+                safeObject(
+                    result.entryZone
+                );
+
+
+            const strength =
+                safeObject(
+                    result.signalStrength
+                );
+
+
+            const diagnostics =
+                safeObject(
+                    result.signalDiagnostics
+                );
+
+
+            const session =
+                safeObject(
+                    result.pairSession
+                );
+
+
+            const regime =
+                safeObject(
+                    result.marketRegime
+                );
+
+
+            const imbalance =
+                safeObject(
+                    result.imbalanceQuality
+                );
+
+
+            const obstacle =
+                safeObject(
+                    strength.obstacle
+                );
+
+
+            const expiration =
+                safeObject(
+                    result.expiration
+                );
+
+
+            return `
+
+                <tr
+                    id="details-${index}"
+                    class="details-row"
+                >
+
+                    <td
+                        colspan="9"
+                        class="details-cell"
+                    >
+
+                        <div class="details-wrapper">
+
+                            <div class="details-grid">
+
+
+                                <div class="detail-card">
+
+                                    <h3>
+                                        Сигнал
+                                    </h3>
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Направление
+                                        </span>
+
+                                        <span
+                                            class="
+                                                detail-value
+                                                ${getSignalClass(
+                                                    result.signal
+                                                )}
+                                            "
+                                        >
+                                            ${escapeHtml(
+                                                result.signal ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Общая оценка
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                result.score
+                                            )}/100
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Стадия сигнала
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                result.signalStage ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Направление рынка
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                result.marketBias ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+                                </div>
+
+
+                                <div class="detail-card">
+
+                                    <h3>
+                                        Сила сигнала
+                                    </h3>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Сила
+                                        </span>
+
+                                        <span
+                                            class="
+                                                strength-badge
+                                                ${getColorClass(
+                                                    strength.color,
+                                                    "strength"
+                                                )}
+                                            "
+                                        >
+                                            ${escapeHtml(
+                                                translateStrength(
+                                                    strength.level
+                                                )
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Оценка
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                strength.score !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        strength.score
+                                                    ) +
+                                                    "/100"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Рекомендация
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                translateRecommendation(
+                                                    strength.recommendation
+                                                )
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div
+                                        style="
+                                            margin-top:14px;
+                                            color:#94a3b8;
+                                            font-size:10px;
+                                            font-weight:900;
+                                        "
+                                    >
+                                        ПОЧЕМУ СИГНАЛ ХОРОШИЙ
+                                    </div>
+
+
+                                    ${buildRussianMessages(
+                                        strength.reasons,
+                                        "reason"
+                                    )}
+
+
+                                    <div
+                                        style="
+                                            margin-top:14px;
+                                            color:#94a3b8;
+                                            font-size:10px;
+                                            font-weight:900;
+                                        "
+                                    >
+                                        РИСКИ / ПРЕДУПРЕЖДЕНИЯ
+                                    </div>
+
+
+                                    ${buildRussianMessages(
+                                        strength.warnings,
+                                        "warning"
+                                    )}
+
+                                </div>
+
+
+                                <div class="detail-card">
+
+                                    <h3>
+                                        Точки входа
+                                    </h3>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Текущая оценка входа
+                                        </span>
+
+                                        <span
+                                            class="
+                                                zone-badge
+                                                ${getColorClass(
+                                                    entryZone.color,
+                                                    "zone"
+                                                )}
+                                            "
+                                        >
+                                            ${escapeHtml(
+                                                translateEntryQuality(
+                                                    entryZone
+                                                        .currentEntryQuality ||
+                                                    entryZone.status
+                                                )
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Текущая цена
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${formatNumber(
+                                                result.currentPrice
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            🟢 Лучшая цена входа
+                                        </span>
+
+                                        <span
+                                            class="
+                                                detail-value
+                                                best-entry
+                                            "
+                                        >
+                                            ${formatNumber(
+                                                entryZone
+                                                    .bestEntryPrice
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            🟢 Оптимальная зона
+                                        </span>
+
+                                        <span
+                                            class="
+                                                detail-value
+                                                optimal-zone
+                                            "
+                                        >
+                                            ${
+                                                entryZone.bestZoneLow !==
+                                                    null &&
+                                                entryZone.bestZoneLow !==
+                                                    undefined
+                                                    ?
+                                                    formatNumber(
+                                                        entryZone
+                                                            .bestZoneLow
+                                                    ) +
+                                                    " - " +
+                                                    formatNumber(
+                                                        entryZone
+                                                            .bestZoneHigh
+                                                    )
+                                                    :
+                                                    "-"
+                                            }
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            🟡 Последняя допустимая цена
+                                        </span>
+
+                                        <span
+                                            class="
+                                                detail-value
+                                                last-entry
+                                            "
+                                        >
+                                            ${formatNumber(
+                                                entryZone
+                                                    .lastAcceptablePrice
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            🔴 Do Not Chase
+                                        </span>
+
+                                        <span
+                                            class="
+                                                detail-value
+                                                do-not-chase
+                                            "
+                                        >
+                                            ${formatNumber(
+                                                entryZone
+                                                    .worstEntryPrice
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Качество входа
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                entryZone
+                                                    .currentEntryScore !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        entryZone
+                                                            .currentEntryScore
+                                                    ) +
+                                                    "/100"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Таймфрейм зоны
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                entryZone.timeframe ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="warning">
+                                        ${escapeHtml(
+                                            translateMessage(
+                                                entryZone.reason ||
+                                                "-"
+                                            )
+                                        )}
+                                    </div>
+
+                                </div>
+                                                                <div class="detail-card">
+
+                                    <h3>
+                                        Тайминг входа
+                                    </h3>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Статус
+                                        </span>
+
+                                        <span
+                                            class="
+                                                entry-status
+                                                ${getEntryClass(
+                                                    entryEngine
+                                                )}
+                                            "
+                                        >
+                                            ${escapeHtml(
+                                                translateEntryQuality(
+                                                    entryEngine.status
+                                                )
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Качество
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                entryEngine
+                                                    .qualityScore !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        entryEngine
+                                                            .qualityScore
+                                                    ) +
+                                                    "/100"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Расстояние от цены сигнала
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                entryEngine
+                                                    .distanceAtr !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        entryEngine
+                                                            .distanceAtr
+                                                    ) +
+                                                    " ATR"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="warning">
+                                        ${escapeHtml(
+                                            translateMessage(
+                                                entryEngine.reason ||
+                                                "-"
+                                            )
+                                        )}
+                                    </div>
+
+                                </div>
+
+
+                                <div class="detail-card">
+
+                                    <h3>
+                                        Риск встречной зоны
+                                    </h3>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Таймфрейм
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                obstacle.timeframe ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Ценовая зона
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                obstacle.zoneLow !==
+                                                undefined
+                                                    ?
+                                                    formatNumber(
+                                                        obstacle.zoneLow
+                                                    ) +
+                                                    " - " +
+                                                    formatNumber(
+                                                        obstacle.zoneHigh
+                                                    )
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Расстояние до зоны
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                obstacle
+                                                    .distanceAtr !==
+                                                null &&
+                                                obstacle
+                                                    .distanceAtr !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        obstacle
+                                                            .distanceAtr
+                                                    ) +
+                                                    " ATR"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Состояние зоны
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                obstacle.status ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Количество касаний
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                obstacle
+                                                    .touchCount !==
+                                                null &&
+                                                obstacle
+                                                    .touchCount !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        obstacle
+                                                            .touchCount
+                                                    )
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+                                </div>
+
+
+                                <div class="detail-card">
+
+                                    <h3>
+                                        Состояние рынка
+                                    </h3>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Текущая цена
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${formatNumber(
+                                                result.currentPrice
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Цена в момент анализа
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${formatNumber(
+                                                result.watchPrice
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Режим рынка
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                regime.regime ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Торговая сессия
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                session.label ||
+                                                session.status ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Качество Imbalance / FVG
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                imbalance.score !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        imbalance.score
+                                                    ) +
+                                                    "/100"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+                                </div>
+
+
+                                <div class="detail-card">
+
+                                    <h3>
+                                        Expiration Engine
+                                    </h3>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Recommended
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                expiration
+                                                    .recommendedMinutes !==
+                                                undefined &&
+                                                expiration
+                                                    .recommendedMinutes !==
+                                                null
+                                                    ?
+                                                    escapeHtml(
+                                                        expiration
+                                                            .recommendedMinutes
+                                                    ) +
+                                                    " min"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Expiration Score
+                                        </span>
+
+                                        <span class="detail-value">
+
+                                            ${
+                                                expiration
+                                                    .recommendedScore !==
+                                                undefined
+                                                    ?
+                                                    escapeHtml(
+                                                        expiration
+                                                            .recommendedScore
+                                                    ) +
+                                                    "/100"
+                                                    :
+                                                    "-"
+                                            }
+
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Strategy
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                expiration.strategy ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+                                </div>
+
+
+                                <div class="detail-card">
+
+                                    <h3>
+                                        Диагностика сигнала
+                                    </h3>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Лучшее направление
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                diagnostics
+                                                    .bestDirection ||
+                                                "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Оценка направления
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                diagnostics
+                                                    .bestDirectionScore !==
+                                                undefined
+                                                    ?
+                                                    diagnostics
+                                                        .bestDirectionScore
+                                                    :
+                                                    "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Минимальная оценка
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                diagnostics
+                                                    .requiredScore !==
+                                                undefined
+                                                    ?
+                                                    diagnostics
+                                                        .requiredScore
+                                                    :
+                                                    "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Разница направлений
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                diagnostics
+                                                    .actualEdge !==
+                                                undefined
+                                                    ?
+                                                    diagnostics
+                                                        .actualEdge
+                                                    :
+                                                    "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div class="detail-line">
+
+                                        <span class="detail-label">
+                                            Требуемая разница
+                                        </span>
+
+                                        <span class="detail-value">
+                                            ${escapeHtml(
+                                                diagnostics
+                                                    .requiredEdge !==
+                                                undefined
+                                                    ?
+                                                    diagnostics
+                                                        .requiredEdge
+                                                    :
+                                                    "-"
+                                            )}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div
+                                        style="
+                                            margin-top:14px;
+                                            color:#94a3b8;
+                                            font-size:10px;
+                                            font-weight:900;
+                                        "
+                                    >
+                                        ПОЧЕМУ СИГНАЛ ЗАБЛОКИРОВАН
+                                    </div>
+
+
+                                    ${buildRussianMessages(
+                                        diagnostics.blockers,
+                                        "warning"
+                                    )}
+
+                                </div>
+
+
+                                ${buildVisualReviewWidget(
+                                    result,
+                                    index
+                                )}
+
+
+                            </div>
+
+                        </div>
+
+                    </td>
+
+                </tr>
+            `;
+        }
+
+
+        // ======================================================
+        // MAIN ROW
+        // ======================================================
+
+        function buildMainRow(
+            result,
+            index
+        ) {
+
+            const pairSession = safeObject(result.pairSession);
+            const entryZone = safeObject(result.entryZone);
+            const signal = result.signal || "NO SIGNAL";
+            const score = Number(result.score) || 0;
+
+            return `
+                <tr class="main-row trade-row">
+                    <td>
+                        <div class="pair-symbol">${escapeHtml(result.symbol || "-")}</div>
+                        <div class="montreal-time">${escapeHtml(pairSession.montrealTime || "-")}</div>
+                    </td>
+                    <td class="${getSignalClass(signal)}">
+                        <span class="direction-pill ${getSignalClass(signal)}">${escapeHtml(signal)}</span>
+                    </td>
+                    <td class="${getScoreClass(score)}">
+                        <strong>${score}/100</strong>
+                        <div class="small-secondary">${escapeHtml(safeObject(result.signalStrength).level || "")}</div>
+                    </td>
+                    <td><div class="entry-price best-entry">${formatNumber(entryZone.bestEntryPrice)}</div></td>
+                    <td>
+                        <div class="entry-price do-not-chase">${formatNumber(entryZone.worstEntryPrice)}</div>
+                        <div class="small-secondary">${signal === "UP" ? "avoid above" : signal === "DOWN" ? "avoid below" : ""}</div>
+                    </td>
+                    <td>${buildEntryZoneStatus(result)}</td>
+                    <td>${formatExpiration(result)}</td>
+                    <td>${formatSignalAge(result.signalAge)}</td>
+                    <td><button class="details-button" data-index="${index}">DETAILS</button></td>
+                </tr>
+            `;
+        }
+
+        function humanDecisionReason(decision) {
+            const raw = decision.reason || decision.entryStatus || decision.entryQuality || decision.strength || "";
+            const map = {
+                NEWS_BLOCKED: "High-impact news filter",
+                NO_VALID_LIVE_PRICE: "No valid current price",
+                NOT_ENOUGH_CLOSED_CANDLES: "Not enough closed candles",
+                NO_SIGNAL: "No confirmed setup",
+                "TOO LATE": "Entry already missed — do not chase",
+                "WORST ENTRY / DO NOT ENTER": "Entry already missed — do not enter",
+                "NOT RECOMMENDED": "Setup is not recommended"
+            };
+            return map[raw] || String(raw).replaceAll("_", " ") || "No additional reason";
+        }
+
+        function renderDecisionSummary(
+            stats,
+            decisions,
+            trades,
+            scannedPairs
+        ) {
+
+            const safeStats =
+                safeObject(
+                    stats
+                );
+
+
+            const list =
+                Array.isArray(
+                    decisions
+                )
+                    ?
+                    decisions
+                    :
+                    [];
+
+
+            const count =
+                action =>
+                    list.filter(
+                        item =>
+                            item &&
+                            item.action ===
+                                action
+                    )
+                    .length;
+
+
+            pairCount.textContent =
+                Number(
+                    scannedPairs
+                ) ||
+                Number(
+                    safeStats.scanned
+                ) ||
+                lastRawDecisions.length ||
+                0;
+
+
+            shownCount.textContent =
+                list.length;
+
+
+            tradeCount.textContent =
+                count(
+                    "TRADE"
+                );
+
+
+            waitCount.textContent =
+                count(
+                    "WAIT"
+                );
+
+
+            errorCount.textContent =
+                Number(
+                    safeStats.errors
+                ) ||
+                lastRawDecisions.filter(
+                    item =>
+                        item &&
+                        item.action ===
+                            "ERROR"
+                )
+                .length ||
+                0;
+        }
+
+
+        function decisionScoreClass(
+            score
+        ) {
+
+            const value =
+                Number(
+                    score
+                ) ||
+                0;
+
+
+            if (
+                value >=
+                    70
+            ) {
+
+                return "high";
+            }
+
+
+            if (
+                value >=
+                    60
+            ) {
+
+                return "medium";
+            }
+
+
+            return "low";
+        }
+
+
+        function getDecisionStrategy(
+            item
+        ) {
+
+            if (
+                item.strategyName
+            ) {
+
+                return item.strategyName;
+            }
+
+
+            const tradeResult =
+                lastRawResults.find(
+                    result =>
+                        result &&
+                        result.symbol ===
+                            item.symbol
+                );
+
+
+            if (
+                tradeResult
+            ) {
+
+                const primary =
+                    safeObject(
+                        tradeResult.primaryStrategy
+                    );
+
+
+                return (
+                    primary.name ||
+                    tradeResult.strategyName ||
+                    tradeResult.strategy ||
+                    "-"
+                );
+            }
+
+
+            return "-";
+        }
+
+
+        function renderDecisionDetails(
+            item
+        ) {
+
+            const tradeResult =
+                lastRawResults.find(
+                    result =>
+                        result &&
+                        result.symbol ===
+                            item.symbol
+                );
+
+
+            const entryZone =
+                tradeResult
+                    ?
+                    safeObject(
+                        tradeResult.entryZone
+                    )
+                    :
+                    {};
+
+
+            const strength =
+                tradeResult
+                    ?
+                    safeObject(
+                        tradeResult.signalStrength
+                    )
+                    :
+                    {};
+
+
+            decisionDetailsPanel.innerHTML = `
+                <div class="decision-details-title">
+                    <span>
+                        ${escapeHtml(item.symbol || "-")} — ${escapeHtml(item.action || "-")} DETAILS
+                    </span>
+
+                    <button class="decision-details-close" id="decisionDetailsClose">
+                        CLOSE
+                    </button>
+                </div>
+
+                <div class="decision-details-grid">
+
+                    <div class="decision-details-card">
+                        <strong>Signal</strong>
+                        ${escapeHtml(item.signal || "-")} · Score ${escapeHtml(item.score ?? "-")}/100
+                    </div>
+
+                    <div class="decision-details-card">
+                        <strong>Expiration</strong>
+                        ${
+                            item.expirationAt
+                                ?
+                                escapeHtml(
+                                    expirationDisplayMode.value ===
+                                        "minutes"
+                                        ?
+                                        formatRemainingExpiration(
+                                            item.expirationAt
+                                        )
+                                        :
+                                        formatClockTimeMontreal(
+                                            item.expirationAt
+                                        ) +
+                                        " Montreal"
+                                )
+                                :
+                                "-"
+                        }
+                    </div>
+
+                    <div class="decision-details-card">
+                        <strong>Strategy</strong>
+                        ${escapeHtml(getDecisionStrategy(item))}
+                    </div>
+
+                    <div class="decision-details-card">
+                        <strong>Entry Status</strong>
+                        ${escapeHtml(item.entryStatus || entryZone.status || "-")}
+                    </div>
+
+                    <div class="decision-details-card">
+                        <strong>Entry Quality</strong>
+                        ${escapeHtml(item.entryQuality || entryZone.currentEntryQuality || "-")}
+                    </div>
+
+                    <div class="decision-details-card">
+                        <strong>Signal Strength</strong>
+                        ${escapeHtml(item.strength || strength.recommendation || strength.level || "-")}
+                    </div>
+
+                    <div class="decision-details-card">
+                        <strong>Reason / Context</strong>
+                        ${escapeHtml(humanDecisionReason(item))}
+                    </div>
+
+                    <div class="decision-details-card">
+                        <strong>Best / Do Not Chase</strong>
+                        ${
+                            tradeResult
+                                ?
+                                `${formatNumber(entryZone.bestEntryPrice)} / ${formatNumber(entryZone.worstEntryPrice)}`
+                                :
+                                "Available when setup becomes TRADE"
+                        }
+                    </div>
+
+                </div>
+            `;
+
+
+            decisionDetailsPanel.classList.add(
+                "open"
+            );
+
+
+            const close =
+                document.getElementById(
+                    "decisionDetailsClose"
+                );
+
+
+            if (
+                close
+            ) {
+
+                close.addEventListener(
+                    "click",
+                    () => {
+
+                        decisionDetailsPanel.classList.remove(
+                            "open"
+                        );
+
+
+                        decisionDetailsPanel.innerHTML =
+                            "";
+                    }
+                );
+            }
+        }
+
+
+        function renderDecisions(
+            decisions
+        ) {
+
+            const list =
+                Array.isArray(
+                    decisions
+                )
+                    ?
+                    decisions.filter(
+                        item =>
+                            item &&
+                            (
+                                item.action ===
+                                    "TRADE" ||
+                                item.action ===
+                                    "WAIT" ||
+                                item.action ===
+                                    "CANDIDATE"
+                            )
+                    )
+                    :
+                    [];
+
+
+            decisionDetailsPanel.classList.remove(
+                "open"
+            );
+
+
+            decisionDetailsPanel.innerHTML =
+                "";
+
+
+            if (
+                !list.length
+            ) {
+
+                decisionList.innerHTML = `
+                    <div class="decision-empty">
+                        No scored signals match the current Score Filter.
+                    </div>
+                `;
+
+
+                return;
+            }
+
+
+            decisionList.innerHTML =
+                list.map(
+                    (
+                        item,
+                        index
+                    ) => {
+
+                        const direction =
+                            String(
+                                item.signal ||
+                                ""
+                            )
+                            .toUpperCase();
+
+
+                        const score =
+                            Number(
+                                item.score
+                            ) ||
+                            0;
+
+
+                        const expiration =
+                            item.expirationAt
+                                ?
+                                (
+                                    expirationDisplayMode.value ===
+                                        "minutes"
+                                        ?
+                                        formatRemainingExpiration(
+                                            item.expirationAt
+                                        )
+                                        .replace(
+                                            " left",
+                                            ""
+                                        )
+                                        :
+                                        formatClockTimeMontreal(
+                                            item.expirationAt
+                                        )
+                                )
+                                :
+                                "—";
+
+
+                        return `
+                            <div class="decision-item decision-${escapeHtml(String(item.action || "WAIT").toLowerCase())}">
+
+                                <div class="decision-pair">
+                                    ${escapeHtml(item.symbol || "-")}
+                                </div>
+
+                                <div>
+                                    <span class="decision-badge">
+                                        ${escapeHtml(item.action || "-")}
+                                    </span>
+                                </div>
+
+                                <div class="decision-direction ${direction === "UP" ? "up" : direction === "DOWN" ? "down" : ""}">
+                                    ${direction === "UP" ? "↑ " : direction === "DOWN" ? "↓ " : ""}
+                                    ${escapeHtml(direction || "-")}
+                                </div>
+
+                                <div class="decision-score ${decisionScoreClass(score)}">
+                                    ${score}
+                                </div>
+
+                                <div class="decision-expiration">
+                                    ${escapeHtml(expiration)}
+                                </div>
+
+                                <div class="decision-strategy">
+                                    ${escapeHtml(getDecisionStrategy(item))}
+                                </div>
+
+                                <div class="decision-reason">
+                                    ${escapeHtml(humanDecisionReason(item))}
+                                </div>
+
+                                <div>
+                                    <button
+                                        class="decision-view-button"
+                                        data-decision-index="${index}"
+                                    >
+                                        VIEW
+                                    </button>
+                                </div>
+
+                            </div>
+                        `;
+                    }
+                )
+                .join(
+                    ""
+                );
+
+
+            document
+                .querySelectorAll(
+                    ".decision-view-button"
+                )
+                .forEach(
+                    button => {
+
+                        button.addEventListener(
+                            "click",
+                            () => {
+
+                                const index =
+                                    Number(
+                                        button.getAttribute(
+                                            "data-decision-index"
+                                        )
+                                    );
+
+
+                                if (
+                                    Number.isInteger(
+                                        index
+                                    ) &&
+                                    list[
+                                        index
+                                    ]
+                                ) {
+
+                                    renderDecisionDetails(
+                                        list[
+                                            index
+                                        ]
+                                    );
+                                }
+                            }
+                        );
+                    }
+                );
+        }
+
+
+        // ======================================================
+        // RENDER
+        // ======================================================
+
+        function renderResults(
+            results
+        ) {
+
+            lastResults =
+                Array.isArray(
+                    results
+                ) ?
+                results : [];
+
+
+            scannerResults.innerHTML =
+                "";
+
+
+            if (
+                lastResults.length ===
+                0
+            ) {
+
+                scannerResults.innerHTML = `
+
+                    <tr>
+
+                        <td
+                            colspan="9"
+                            style="
+                                text-align:center;
+                                padding:30px;
+                                color:#64748b;
+                            "
+                        >
+                            No TRADE opportunities right now
+                        </td>
+
+                    </tr>
+                `;
+
+
+                return;
+            }
+
+
+            let html =
+                "";
+
+
+            lastResults.forEach(
+                (
+                    result,
+                    index
+                ) => {
+
+                    html +=
+                        buildMainRow(
+                            result,
+                            index
+                        );
+
+
+                    html +=
+                        buildDetails(
+                            result,
+                            index
+                        );
+                }
+            );
+
+
+            scannerResults.innerHTML =
+                html;
+
+
+            document
+                .querySelectorAll(
+                    ".details-button"
+                )
+                .forEach(
+                    button => {
+
+                        button.addEventListener(
+                            "click",
+                            () => {
+
+                                const index =
+                                    button.getAttribute(
+                                        "data-index"
+                                    );
+
+
+                                const row =
+                                    document.getElementById(
+                                        `details-${index}`
+                                    );
+
+
+                                if (!row) {
+                                    return;
+                                }
+
+
+                                const isOpen =
+                                    row.classList
+                                    .contains(
+                                        "open"
+                                    );
+
+
+                                document
+                                    .querySelectorAll(
+                                        ".details-row.open"
+                                    )
+                                    .forEach(
+                                        openRow => {
+
+                                            openRow
+                                                .classList
+                                                .remove(
+                                                    "open"
+                                                );
+                                        }
+                                    );
+
+
+                                document
+                                    .querySelectorAll(
+                                        ".details-button"
+                                    )
+                                    .forEach(
+                                        item => {
+
+                                            item.textContent =
+                                                "DETAILS";
+                                        }
+                                    );
+
+
+                                if (!isOpen) {
+
+                                    row.classList.add(
+                                        "open"
+                                    );
+
+
+                                    button.textContent =
+                                        "CLOSE";
+                                }
+                            }
+                        );
+                    }
+                );
+
+            document
+                .querySelectorAll(
+                    ".visual-review-analyze-inline"
+                )
+                .forEach(
+                    button => {
+
+                        button.addEventListener(
+                            "click",
+                            () => {
+
+                                analyzeVisualReviewInline(
+                                    Number(
+                                        button.getAttribute(
+                                            "data-index"
+                                        )
+                                    )
+                                );
+                            }
+                        );
+                    }
+                );
+
+        }
+
+
+        // ======================================================
+        // LOADING
+        // ======================================================
+
+        function showScanningState() {
+
+            scannerResults.innerHTML = `
+
+                <tr>
+
+                    <td
+                        colspan="9"
+                        style="
+                            text-align:center;
+                            padding:34px;
+                            color:#94a3b8;
+                            font-weight:700;
+                        "
+                    >
+                        Scanning market...
+                    </td>
+
+                </tr>
+            `;
+        }
+
+
+        function showScannerError(
+            message
+        ) {
+
+            scannerResults.innerHTML = `
+
+                <tr>
+
+                    <td
+                        colspan="9"
+                        style="
+                            text-align:center;
+                            padding:34px;
+                            color:#f87171;
+                        "
+                    >
+                        Scanner error:
+                        ${escapeHtml(
+                            message
+                        )}
+                    </td>
+
+                </tr>
+            `;
+        }
+        // ======================================================
+        // CURRENT MARKET SESSION
+        // ======================================================
+
+        function renderMarketPeriod(
+            marketPeriod
+        ) {
+
+            const period =
+                safeObject(
+                    marketPeriod
+                );
+
+
+            const pairs =
+                Array.isArray(
+                    period.activePairs
+                ) ?
+                period.activePairs : [];
+
+
+            marketSessionName.textContent =
+                period.label ||
+                "-";
+
+
+            marketSessionName.classList.remove(
+                "market-session-off"
+            );
+
+
+            // ==================================================
+            // SCANNER OFF
+            // ==================================================
+
+            if (
+                period.scannerEnabled === false ||
+                pairs.length === 0
+            ) {
+
+                marketSessionName.classList.add(
+                    "market-session-off"
+                );
+
+
+                marketSessionPairs.innerHTML = `
+            <span class="market-session-off">
+                Scanner OFF — no new signals
+            </span>
+        `;
+
+
+                return;
+            }
+
+
+            // ==================================================
+            // ACTIVE PAIRS
+            // ==================================================
+
+            marketSessionPairs.innerHTML =
+                pairs
+                .map(
+                    pair => `
+                    <span class="market-pair-chip">
+                        ${escapeHtml(
+                            pair
+                        )}
+                    </span>
+                `
+                )
+                .join("");
+        }
+
+        // ======================================================
+        // RUN SCANNER
+        // ======================================================
+
+        const scorePresetButtons =
+            Array.from(
+                document.querySelectorAll(
+                    "[data-score-preset]"
+                )
+            );
+
+
+        function readScoreWeights(){
+            return {
+                context:+contextWeight.value,
+                setup:+setupWeight.value,
+                entry:+entryWeight.value,
+                strategy:+strategyWeight.value,
+                session:+sessionWeight.value
+            };
+        }
+
+
+        function setScoreWeightControls(w){
+            contextWeight.value=w.context;
+            setupWeight.value=w.setup;
+            entryWeight.value=w.entry;
+            strategyWeight.value=w.strategy;
+            sessionWeight.value=w.session;
+        }
+
+
+        function markScorePreset(name){
+            selectedScorePreset=name;
+
+            scorePresetButtons.forEach(
+                button => {
+                    button.classList.toggle(
+                        "active",
+                        button.dataset.scorePreset === name
+                    );
+                }
+            );
+        }
+
+
+        function refreshScoreWeights(fromSlider=false){
+            const w=readScoreWeights();
+            const total=w.context+w.setup+w.entry+w.strategy+w.session;
+
+            contextWeightValue.textContent=w.context+"%";
+            setupWeightValue.textContent=w.setup+"%";
+            entryWeightValue.textContent=w.entry+"%";
+            strategyWeightValue.textContent=w.strategy+"%";
+            sessionWeightValue.textContent=w.session+"%";
+
+            scoreWeightsTotal.textContent="TOTAL "+total+"%";
+
+            const valid=Math.abs(total-100)<0.001;
+            scoreWeightsTotal.classList.toggle("valid",valid);
+            scoreWeightsTotal.classList.toggle("invalid",!valid);
+            applyScoreWeights.disabled=!valid;
+
+            if(fromSlider){
+                markScorePreset("custom");
+            }
+        }
+
+
+        [contextWeight,setupWeight,entryWeight,strategyWeight,sessionWeight]
+        .forEach(
+            control =>
+                control.addEventListener(
+                    "input",
+                    () => refreshScoreWeights(true)
+                )
+        );
+
+
+        scorePresetButtons.forEach(
+            button => {
+                button.addEventListener(
+                    "click",
+                    () => {
+                        const name=button.dataset.scorePreset;
+
+                        if(name === "custom"){
+                            markScorePreset("custom");
+                            return;
+                        }
+
+                        const preset=SCORE_PRESETS[name];
+
+                        if(!preset){
+                            return;
+                        }
+
+                        setScoreWeightControls(preset);
+                        appliedScoreWeights={...preset};
+                        markScorePreset(name);
+                        refreshScoreWeights(false);
+
+                        scannerStatus.textContent=
+                            `${name.toUpperCase()} score preset applied: ${preset.context}/${preset.setup}/${preset.entry}/${preset.strategy}/${preset.session}`;
+                    }
+                );
+            }
+        );
+
+
+        resetScoreWeights.addEventListener(
+            "click",
+            () => {
+                const w=SCORE_PRESETS.balanced;
+                setScoreWeightControls(w);
+                appliedScoreWeights={...w};
+                markScorePreset("balanced");
+                refreshScoreWeights(false);
+
+                scannerStatus.textContent=
+                    "Score weights reset to BALANCED 20/30/25/15/10";
+            }
+        );
+
+
+        applyScoreWeights.addEventListener(
+            "click",
+            () => {
+                const w=readScoreWeights();
+
+                if(
+                    Math.abs(
+                        w.context+w.setup+w.entry+w.strategy+w.session-100
+                    ) < 0.001
+                ){
+                    appliedScoreWeights={...w};
+
+                    scannerStatus.textContent=
+                        `CUSTOM score weights applied: ${w.context}/${w.setup}/${w.entry}/${w.strategy}/${w.session}`;
+
+                    markScorePreset("custom");
+                }
+            }
+        );
+
+
+        refreshScoreWeights(false);
+
+
+        async function runScanner() {
+
+            showScanningState();
+
+
+            // Fresh scan: immediately remove all previous GUI signals.
+            lastRawResults =
+                [];
+
+
+            lastRawDecisions =
+                [];
+
+
+            lastResults =
+                [];
+
+
+            lastScanStats =
+                {};
+
+
+            lastScannedPairCount =
+                0;
+
+
+            decisionList.innerHTML = `
+                <div class="decision-empty">
+                    Refreshing signals...
+                </div>
+            `;
+
+
+            decisionDetailsPanel.classList.remove(
+                "open"
+            );
+
+
+            decisionDetailsPanel.innerHTML =
+                "";
+
+
+            pairCount.textContent =
+                "0";
+
+
+            shownCount.textContent =
+                "0";
+
+
+            tradeCount.textContent =
+                "0";
+
+
+            waitCount.textContent =
+                "0";
+
+
+            errorCount.textContent =
+                "0";
+
+
+            scannerStatus.textContent =
+                `Refreshing signals... Min Score ${getMinimumDisplayScore()}`;
+
+
+            scannerButton.disabled =
+                true;
+
+
+            try {
+
+                const response =
+                    await fetch(
+                        `/api/scan?minScore=${encodeURIComponent(
+                            getMinimumDisplayScore()
+                        )}&showWeak=1&weights=${encodeURIComponent([
+                            appliedScoreWeights.context,
+                            appliedScoreWeights.setup,
+                            appliedScoreWeights.entry,
+                            appliedScoreWeights.strategy,
+                            appliedScoreWeights.session
+                        ].join(","))}`, {
+                            method: "GET",
+
+                            cache: "no-store"
+                        }
+                    );
+
+
+                const contentType =
+                    response.headers.get(
+                        "content-type"
+                    ) || "";
+
+
+                if (!contentType.includes(
+                        "application/json"
+                    )) {
+
+                    const text =
+                        await response.text();
+
+
+                    throw new Error(
+                        text ||
+                        `HTTP ${response.status}`
+                    );
+                }
+
+
+                const data =
+                    await response.json();
+
+
+                if (!response.ok) {
+
+                    throw new Error(
+                        data.error ||
+                        data.message ||
+                        `HTTP ${response.status}`
+                    );
+                }
+
+
+                if (
+                    data.status !==
+                    "ok"
+                ) {
+
+                    throw new Error(
+                        data.error ||
+                        data.message ||
+                        "Scanner returned an error"
+                    );
+                }
+
+
+                // ======================================================
+                // SHOW CURRENT SESSION + ACTIVE PAIRS
+                // ======================================================
+
+                renderMarketPeriod(
+                    data.marketPeriod
+                );
+
+
+                let results =
+                    Array.isArray(
+                        data.results
+                    ) ?
+                    data.results : [];
+
+
+                results =
+                    results.filter(
+                        result =>
+                        result.signal ===
+                            "UP" ||
+                        result.signal ===
+                            "DOWN"
+                    );
+
+
+                lastRawResults =
+                    results;
+
+
+                lastRawDecisions =
+                    Array.isArray(
+                        data.scanDecisions
+                    )
+                        ?
+                        data.scanDecisions
+                        :
+                        (
+                            Array.isArray(
+                                data.decisions
+                            )
+                                ?
+                                data.decisions
+                                :
+                                []
+                        );
+
+
+                lastScanStats =
+                    safeObject(
+                        data.scanStats
+                    );
+
+
+                const currentPeriod =
+                    safeObject(
+                        data.marketPeriod
+                    );
+
+
+                lastScannedPairCount =
+                    Array.isArray(
+                        currentPeriod.activePairs
+                    )
+                        ?
+                        currentPeriod.activePairs.length
+                        :
+                        lastRawDecisions.length;
+
+
+                applyDisplayPreferences();
+
+
+                const hiddenNews =
+                    Number(
+                        data.hiddenDueToNews
+                    ) || 0;
+
+
+                const period =
+                    safeObject(
+                        data.marketPeriod
+                    );
+
+
+                const activePairCount =
+                    Array.isArray(
+                        period.activePairs
+                    ) ?
+                    period.activePairs.length :
+                    0;
+
+
+                scannerStatus.textContent =
+                    "Scan complete | " +
+                    (
+                        data.montrealTime ||
+                        "-"
+                    ) +
+                    " Montreal | " +
+                    (
+                        period.label ||
+                        "-"
+                    ) +
+                    " | " +
+                    activePairCount +
+                    " pairs | " +
+                    (
+                        lastRawDecisions.filter(
+                            item =>
+                                item &&
+                                (
+                                    item.action ===
+                                        "TRADE" ||
+                                    item.action ===
+                                        "WAIT" ||
+                                    item.action ===
+                                        "CANDIDATE"
+                                ) &&
+                                passesMinimumScoreFilter(
+                                    item
+                                )
+                        )
+                        .length
+                    ) +
+                    " signals shown" +
+                    (
+                        hiddenNews > 0 ?
+                        ` | ${hiddenNews} hidden by news` :
+                        ""
+                    );
+
+
+            } catch (
+                error
+            ) {
+
+                console.error(
+                    "Scanner error:",
+                    error
+                );
+
+
+                scannerStatus.textContent =
+                    "ERROR: " +
+                    error.message;
+
+
+                decisionList.innerHTML = `
+                    <div class="decision-empty" style="color:#f87171;">
+                        Scanner error: ${escapeHtml(error.message)}
+                    </div>
+                `;
+
+
+                showScannerError(
+                    error.message
+                );
+
+
+            } finally {
+
+                scannerButton.disabled =
+                    false;
+            }
+        }
+
+
+        minScoreFilter.addEventListener(
+            "change",
+            () => {
+
+                localStorage.setItem(
+                    "forexScannerMinScore",
+                    minScoreFilter.value
+                );
+
+
+                applyDisplayPreferences();
+            }
+        );
+
+
+        showWeakSetups.addEventListener(
+            "change",
+            () => {
+
+                localStorage.setItem(
+                    "forexScannerShowWeakSetups",
+                    showWeakSetups.checked
+                        ?
+                        "1"
+                        :
+                        "0"
+                );
+
+
+                applyDisplayPreferences();
+            }
+        );
+
+
+        const savedSignalScoreFilter =
+            Number(
+                localStorage.getItem(
+                    "forexScannerSignalScoreFilter"
+                )
+            );
+
+
+        if (
+            Number.isFinite(
+                savedSignalScoreFilter
+            )
+        ) {
+
+            signalScoreFilter.value =
+                String(
+                    Math.max(
+                        0,
+                        Math.min(
+                            100,
+                            savedSignalScoreFilter
+                        )
+                    )
+                );
+        }
+
+
+        signalScoreFilterValue.textContent =
+            String(
+                getSignalScoreFilter()
+            );
+
+
+        signalScoreFilter.addEventListener(
+            "input",
+            () => {
+
+                signalScoreFilterValue.textContent =
+                    String(
+                        getSignalScoreFilter()
+                    );
+
+
+                localStorage.setItem(
+                    "forexScannerSignalScoreFilter",
+                    String(
+                        getSignalScoreFilter()
+                    )
+                );
+
+
+                applyDisplayPreferences();
+            }
+        );
+
+
+        expirationDisplayMode.addEventListener(
+            "change",
+            () => {
+
+                localStorage.setItem(
+                    "forexScannerExpirationMode",
+                    expirationDisplayMode.value
+                );
+
+
+                applyDisplayPreferences();
+            }
+        );
+
+
+        loadDisplayPreferences();
+
+
+        minScoreFilter.value =
+            "50";
+
+
+        testTelegramButton.addEventListener(
+            "click",
+            async () => {
+                testTelegramButton.disabled = true;
+                scannerStatus.textContent = "Sending Telegram test...";
+
+                try {
+                    const response = await fetch(
+                        "/api/telegram/test",
+                        {
+                            method: "POST",
+                            cache: "no-store"
+                        }
+                    );
+
+                    const data = await response.json();
+
+                    if (!response.ok || data.status !== "ok") {
+                        throw new Error(data.error || "Telegram test failed");
+                    }
+
+                    scannerStatus.textContent = "Telegram test sent successfully";
+                } catch (error) {
+                    scannerStatus.textContent = `Telegram test error: ${error.message}`;
+                } finally {
+                    testTelegramButton.disabled = false;
+                }
+            }
+        );
+
+
+        scannerButton.addEventListener(
+            "click",
+            runScanner
+        );
+
+
+        scannerStatus.textContent =
+            "Ready | REST mode | press SCAN NOW";
+    </script>
+
+</body>
+
+</html>
