@@ -638,46 +638,105 @@ function mergeClosedCandles(
 // DST учитывается автоматически.
 // ======================================================
 
-const PAIRS_BY_PERIOD = {
-
-    ASIA: [
-        'USD/JPY',
-        'EUR/JPY',
-        'GBP/JPY',
-        'AUD/JPY',
-        'AUD/USD'
-    ],
-
-    PRE_LONDON: [
-        'USD/JPY',
-        'EUR/JPY',
-        'GBP/JPY',
-        'AUD/USD',
-        'EUR/USD'
-    ],
-
-    LONDON: [
-        'EUR/USD',
-        'GBP/USD',
-        'EUR/GBP',
-        'USD/CHF',
-        'EUR/JPY'
-    ],
-
-    LONDON_NEW_YORK: [
-        'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'EUR/GBP', 'USD/CAD', 'EUR/CAD', 'GBP/CAD', 'CAD/JPY', 'AUD/CAD'
-    ],
-
-    NEW_YORK: [
-        'EUR/USD',
-        'GBP/USD',
-        'USD/JPY',
-        'USD/CHF',
-        'USD/CAD'
-    ],
-
-    ROLLOVER: []
+const SESSION_CURRENCY_PRIORITY = {
+    ASIA: {
+        JPY: 100,
+        AUD: 95,
+        NZD: 90,
+        USD: 55,
+        EUR: 25,
+        GBP: 20,
+        CHF: 15,
+        CAD: 15
+    },
+    PRE_LONDON: {
+        JPY: 75,
+        AUD: 65,
+        NZD: 60,
+        EUR: 60,
+        GBP: 55,
+        USD: 50,
+        CHF: 40,
+        CAD: 20
+    },
+    LONDON: {
+        EUR: 100,
+        GBP: 100,
+        CHF: 85,
+        USD: 65,
+        JPY: 50,
+        CAD: 35,
+        AUD: 25,
+        NZD: 20
+    },
+    LONDON_NEW_YORK: {
+        EUR: 100,
+        GBP: 100,
+        USD: 100,
+        CHF: 80,
+        CAD: 75,
+        JPY: 70,
+        AUD: 45,
+        NZD: 35
+    },
+    NEW_YORK: {
+        USD: 100,
+        CAD: 95,
+        EUR: 70,
+        GBP: 65,
+        JPY: 60,
+        CHF: 55,
+        AUD: 35,
+        NZD: 30
+    }
 };
+
+function getSessionPairScore(symbol, periodKey) {
+    const priority = SESSION_CURRENCY_PRIORITY[periodKey] || {};
+    const [base, quote] = String(symbol).toUpperCase().split('/');
+    const baseScore = Number(priority[base] || 0);
+    const quoteScore = Number(priority[quote] || 0);
+
+    // Both currencies matter. A pair with two session currencies
+    // ranks above a pair where only one side is active.
+    let score = baseScore + quoteScore;
+
+    // Small preference for liquid majors without making it a hard rule.
+    if (['EUR/USD','GBP/USD','USD/JPY','USD/CHF','USD/CAD','AUD/USD','NZD/USD'].includes(symbol)) {
+        score += 8;
+    }
+
+    return score;
+}
+
+function getRankedSessionPairs(periodKey, limit = 5) {
+    if (periodKey === 'ROLLOVER') {
+        return [];
+    }
+
+    return PAIRS
+        .map(symbol => ({
+            symbol,
+            sessionScore: getSessionPairScore(symbol, periodKey)
+        }))
+        .sort((a, b) =>
+            b.sessionScore - a.sessionScore ||
+            a.symbol.localeCompare(b.symbol)
+        )
+        .slice(0, limit);
+}
+
+function buildMarketPeriod(key, label) {
+    const rankedPairs = getRankedSessionPairs(key, 5);
+
+    return {
+        key,
+        label,
+        activePairs: rankedPairs.map(item => item.symbol),
+        rankedPairs,
+        selectionMode: 'SESSION_RANKING_TOP_5'
+    };
+}
 
 
 // ======================================================
@@ -731,137 +790,34 @@ function getMontrealHour() {
 // ======================================================
 
 function getActiveMarketPeriod() {
+    const hour = getMontrealHour();
 
-    const hour =
-        getMontrealHour();
-
-
-    // ==================================================
-    // 19:00 - 00:00
-    // ASIA
-    // ==================================================
-
-    if (
-        hour >=
-        19
-    ) {
-
-        return {
-
-            key: 'ASIA',
-
-            label: 'ASIA',
-
-            activePairs: PAIRS_BY_PERIOD.ASIA
-        };
+    if (hour >= 19) {
+        return buildMarketPeriod('ASIA', 'ASIA');
     }
 
-
-    // ==================================================
-    // 00:00 - 03:00
-    // PRE-LONDON
-    // ==================================================
-
-    if (
-        hour >=
-        0 &&
-        hour <
-        3
-    ) {
-
-        return {
-
-            key: 'PRE_LONDON',
-
-            label: 'PRE-LONDON',
-
-            activePairs: PAIRS_BY_PERIOD.PRE_LONDON
-        };
+    if (hour >= 0 && hour < 3) {
+        return buildMarketPeriod('PRE_LONDON', 'PRE-LONDON');
     }
 
-
-    // ==================================================
-    // 03:00 - 08:00
-    // LONDON
-    // ==================================================
-
-    if (
-        hour >=
-        3 &&
-        hour <
-        8
-    ) {
-
-        return {
-
-            key: 'LONDON',
-
-            label: 'LONDON',
-
-            activePairs: PAIRS_BY_PERIOD.LONDON
-        };
+    if (hour >= 3 && hour < 8) {
+        return buildMarketPeriod('LONDON', 'LONDON');
     }
 
-
-    // ==================================================
-    // 08:00 - 12:00
-    // LONDON + NEW YORK
-    // ==================================================
-
-    if (
-        hour >=
-        8 &&
-        hour <
-        12
-    ) {
-
-        return {
-
-            key: 'LONDON_NEW_YORK',
-
-            label: 'LONDON + NEW YORK',
-
-            activePairs: PAIRS_BY_PERIOD
-                .LONDON_NEW_YORK
-        };
+    if (hour >= 8 && hour < 12) {
+        return buildMarketPeriod('LONDON_NEW_YORK', 'LONDON + NEW YORK');
     }
 
-
-    // ==================================================
-    // 12:00 - 16:00
-    // NEW YORK
-    // ==================================================
-
-    if (
-        hour >=
-        12 &&
-        hour <
-        16
-    ) {
-
-        return {
-
-            key: 'NEW_YORK',
-
-            label: 'NEW YORK',
-
-            activePairs: PAIRS_BY_PERIOD.NEW_YORK
-        };
+    if (hour >= 12 && hour < 16) {
+        return buildMarketPeriod('NEW_YORK', 'NEW YORK');
     }
-
-
-    // ==================================================
-    // 16:00 - 19:00
-    // ROLLOVER / SCANNER OFF
-    // ==================================================
 
     return {
-
         key: 'ROLLOVER',
-
         label: 'ROLLOVER / SCANNER OFF',
-
-        activePairs: []
+        activePairs: [],
+        rankedPairs: [],
+        selectionMode: 'SCANNER_OFF'
     };
 }
 
@@ -871,17 +827,7 @@ function getActiveMarketPeriod() {
 // ======================================================
 
 function getAllSessionPairs() {
-
-    return [
-
-        ...new Set(
-
-            Object.values(
-                PAIRS_BY_PERIOD
-            )
-            .flat()
-        )
-    ];
+    return [...PAIRS];
 }
 
 
@@ -898,7 +844,8 @@ const path =
 const {
     PORT,
     API_KEY,
-    TWELVE_DATA_API_KEY_SOURCE
+    TWELVE_DATA_API_KEY_SOURCE,
+    PAIRS
 } = require('./config');
 
 
@@ -906,6 +853,38 @@ if (!API_KEY) {
     console.warn('[CONFIG] Twelve Data API key is missing. Add TWELVE_DATA_API_KEY=... to .env');
 } else {
     console.log(`[CONFIG] Twelve Data API key loaded from ${TWELVE_DATA_API_KEY_SOURCE}`);
+}
+
+
+// ======================================================
+// PAIR CONFIG INTEGRITY
+// ======================================================
+
+const invalidPairs =
+    PAIRS.filter(
+        symbol =>
+            !/^[A-Z]{3}\/[A-Z]{3}$/.test(
+                String(symbol)
+            )
+    );
+
+const duplicatePairs =
+    PAIRS.filter(
+        (symbol, index) =>
+            PAIRS.indexOf(symbol) !== index
+    );
+
+if (
+    invalidPairs.length ||
+    duplicatePairs.length
+) {
+    throw new Error(
+        '[CONFIG] Invalid PAIRS configuration: ' +
+        JSON.stringify({
+            invalidPairs,
+            duplicatePairs
+        })
+    );
 }
 
 const {

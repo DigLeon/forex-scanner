@@ -22,20 +22,29 @@ const TWELVE_DATA_API_KEY_SOURCE =
 // FOREX PAIRS
 // ======================================================
 
-const PAIRS = [
+const PAIRS = Object.freeze([
+    'EUR/USD',
     'GBP/USD',
     'USD/JPY',
+    'USD/CHF',
     'USD/CAD',
-    'EUR/CAD',
-    'AUD/CAD',
-    'EUR/USD',
+
     'EUR/GBP',
     'EUR/JPY',
     'GBP/JPY',
+
     'AUD/USD',
+    'AUD/JPY',
+    'AUD/NZD',
+
+    'NZD/USD',
+    'NZD/JPY',
+
+    'EUR/CAD',
     'GBP/CAD',
-    'CAD/JPY',
-];
+    'AUD/CAD',
+    'CAD/JPY'
+]);
 
 
 // ======================================================
