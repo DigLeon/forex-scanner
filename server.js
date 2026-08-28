@@ -727,14 +727,21 @@ function getRankedSessionPairs(periodKey, limit = 5) {
 }
 
 function buildMarketPeriod(key, label) {
-    const rankedPairs = getRankedSessionPairs(key, 5);
+    const poolSize = SESSION_PREFILTER.enabled ? SESSION_PREFILTER.poolSize : 5;
+    const rankedPairs = getRankedSessionPairs(key, poolSize);
+    const fallbackActivePairs = rankedPairs
+        .slice(0, SESSION_PREFILTER.enabled ? SESSION_PREFILTER.targetCount : 5)
+        .map(item => item.symbol);
 
     return {
         key,
         label,
-        activePairs: rankedPairs.map(item => item.symbol),
+        activePairs: fallbackActivePairs,
+        candidatePairs: rankedPairs.map(item => item.symbol),
         rankedPairs,
-        selectionMode: 'SESSION_RANKING_TOP_5'
+        selectionMode: SESSION_PREFILTER.enabled ?
+            'SESSION_RANKING_PREFILTER' :
+            'SESSION_RANKING_TOP_5'
     };
 }
 
@@ -845,7 +852,8 @@ const {
     PORT,
     API_KEY,
     TWELVE_DATA_API_KEY_SOURCE,
-    PAIRS
+    PAIRS,
+    SESSION_PREFILTER
 } = require('./config');
 
 
@@ -890,6 +898,11 @@ if (
 const {
     combinedAnalysis
 } = require('./analysisEngine');
+
+const {
+    scorePrefilterPair,
+    selectActivePairs
+} = require('./sessionPrefilter');
 
 
 const {
@@ -1798,14 +1811,62 @@ app.get(
             getActiveMarketPeriod();
 
 
-        const activePairs =
-            Array.isArray(
-                marketPeriod.activePairs
-            ) ?
-            marketPeriod.activePairs.slice(
-                0,
-                5
-            ) : [];
+        let activePairs =
+            Array.isArray(marketPeriod.activePairs) ?
+            marketPeriod.activePairs.slice(0, 5) : [];
+
+        let prefilter = null;
+
+        // v4.9.4: rank Top-8 using already-required 1M history, then run the
+        // unchanged full scanner only on up to five viable pairs.
+        if (SESSION_PREFILTER.enabled && marketPeriod.key !== 'ROLLOVER') {
+            const candidates = Array.isArray(marketPeriod.rankedPairs) ?
+                marketPeriod.rankedPairs.slice(0, SESSION_PREFILTER.poolSize) : [];
+            const maxSessionScore = candidates.reduce(
+                (max, item) => Math.max(max, Number(item.sessionScore || 0)), 0
+            );
+            const scored = [];
+            const prefilterErrors = [];
+
+            for (const candidate of candidates) {
+                try {
+                    const history = await bootstrapLocalHistory(candidate.symbol);
+                    scored.push(scorePrefilterPair(
+                        candidate.symbol, history, candidate.sessionScore, maxSessionScore
+                    ));
+                } catch (error) {
+                    prefilterErrors.push({ symbol: candidate.symbol, error: error.message });
+                    console.warn('[PREFILTER ERROR]', candidate.symbol, error.message);
+                }
+            }
+
+            const selection = selectActivePairs(
+                scored, candidates.map(item => item.symbol)
+            );
+            activePairs = selection.selectedSymbols;
+            prefilter = {
+                enabled: true,
+                poolSize: candidates.length,
+                targetCount: SESSION_PREFILTER.targetCount,
+                minScore: SESSION_PREFILTER.minScore,
+                qualifiedCount: selection.qualifiedCount,
+                fallbackUsed: selection.fallbackUsed,
+                selectedPairs: activePairs,
+                ranked: selection.ranked,
+                errors: prefilterErrors
+            };
+
+            console.log('');
+            console.log('[PREFILTER]', marketPeriod.label, '| candidates:', candidates.length);
+            for (const item of selection.ranked) {
+                console.log('[PREFILTER]', item.symbol,
+                    String(item.prefilterScore).padStart(3, ' '),
+                    item.prefilterScore >= SESSION_PREFILTER.minScore ? 'PASS' : 'REJECT');
+            }
+            console.log('[PREFILTER] Selected:', activePairs.length ? activePairs.join(', ') : 'NONE');
+        }
+
+        marketPeriod.activePairs = activePairs.slice();
 
 
         // ==============================================
@@ -3980,9 +4041,20 @@ app.get(
 
                 activePairs: activePairs,
 
+                candidatePairs: marketPeriod.candidatePairs || activePairs,
+
+                selectionMode: marketPeriod.selectionMode,
+
                 scannerEnabled: activePairs.length >
                     0
             },
+
+
+            // ==========================================
+            // PREFILTER DIAGNOSTICS
+            // ==========================================
+
+            prefilter: prefilter,
 
 
             // ==========================================
@@ -4491,7 +4563,7 @@ app.get(
 
             status: 'ok',
 
-            server: 'Market Data Scanner v7 Modular',
+            server: 'Market Data Scanner v7 Modular — v4.9.4 Prefilter',
 
             mode: 'PAPER_ANALYSIS',
 
@@ -4979,7 +5051,7 @@ app.listen(
 
 
         console.log(
-            'Market Data Scanner v7 Modular'
+            'Market Data Scanner v7 Modular — v4.9.4 Prefilter'
         );
 
 
@@ -5099,7 +5171,7 @@ app.listen(
 
 
         console.log(
-            'Active pairs:',
+            SESSION_PREFILTER.enabled ? 'Session fallback pairs (prefilter runs on scan):' : 'Active pairs:',
             marketPeriod
             .activePairs
             .length ?
