@@ -51,6 +51,73 @@ const RETRYABLE_HTTP_CODES = [
 
 
 // ======================================================
+// TWELVE DATA REST CREDIT MANAGER — v4.15
+// ======================================================
+// Twelve Data free-tier logs show an 8 credits/minute ceiling.
+// Keep one credit of headroom by default so scan + Smart Recheck
+// cannot burst past the provider limit. Every actual HTTP attempt
+// passes through this gate; cache hits consume no local budget.
+const TWELVE_REST_CREDITS_PER_MINUTE = Math.max(
+    1,
+    Math.min(8, Number(process.env.TWELVE_REST_CREDITS_PER_MINUTE) || 7)
+);
+const TWELVE_REST_WINDOW_MS = 60 * 1000;
+const twelveRestCreditTimestamps = [];
+let twelveRestCreditGate = Promise.resolve();
+
+function pruneRestCreditWindow(now = Date.now()) {
+    while (
+        twelveRestCreditTimestamps.length &&
+        now - twelveRestCreditTimestamps[0] >= TWELVE_REST_WINDOW_MS
+    ) {
+        twelveRestCreditTimestamps.shift();
+    }
+}
+
+function acquireTwelveRestCredit() {
+    const task = twelveRestCreditGate.then(async () => {
+        while (true) {
+            const now = Date.now();
+            pruneRestCreditWindow(now);
+
+            if (twelveRestCreditTimestamps.length < TWELVE_REST_CREDITS_PER_MINUTE) {
+                twelveRestCreditTimestamps.push(Date.now());
+                return;
+            }
+
+            const waitMs = Math.max(
+                250,
+                TWELVE_REST_WINDOW_MS - (now - twelveRestCreditTimestamps[0]) + 250
+            );
+            console.log(
+                '[REST CREDIT MANAGER] queue | used:',
+                `${twelveRestCreditTimestamps.length}/${TWELVE_REST_CREDITS_PER_MINUTE}`,
+                '| wait:', `${Math.ceil(waitMs / 1000)}s`
+            );
+            await sleep(waitMs);
+        }
+    });
+
+    // Keep the serialization chain alive even if a caller later fails.
+    twelveRestCreditGate = task.catch(() => {});
+    return task;
+}
+
+function getRestCreditManagerStatus() {
+    pruneRestCreditWindow();
+    return {
+        limitPerMinute: TWELVE_REST_CREDITS_PER_MINUTE,
+        usedInWindow: twelveRestCreditTimestamps.length,
+        availableInWindow: Math.max(
+            0,
+            TWELVE_REST_CREDITS_PER_MINUTE - twelveRestCreditTimestamps.length
+        ),
+        windowMs: TWELVE_REST_WINDOW_MS
+    };
+}
+
+
+// ======================================================
 // MEMORY CACHE
 // ======================================================
 
@@ -254,6 +321,10 @@ async function requestJson(
         let attempt = 1; attempt <= retries; attempt++
     ) {
         try {
+
+            // Count only real outbound HTTP attempts. Cached/coalesced reads
+            // never reach this point and therefore consume no manager credit.
+            await acquireTwelveRestCredit();
 
             const response =
                 await fetch(
@@ -824,5 +895,6 @@ module.exports = {
     getTimeSeries,
     getPrice,
     getMarketDataCacheStatus,
-    clearMarketDataCache
+    clearMarketDataCache,
+    getRestCreditManagerStatus
 };

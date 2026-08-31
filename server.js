@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+const realtimeEventMonitor = require('./realtimeMarketData');
+const { onRealtimePrice, onRealtimeClosed1mCandle } = realtimeEventMonitor;
 
 const {
     checkNewsRisk
@@ -10,8 +12,22 @@ const {
     resolveSignal,
     getExpiredPendingSignals,
     getSignalHistory,
-    getSignalStats
+    getSignalStats,
+    observePendingSignals,
+    getPendingSignalSymbols
 } = require('./signalLogger');
+
+const {
+    logScoreDiagnostic,
+    getScoreDiagnosticHistory,
+    clearScoreDiagnosticHistory
+} = require('./scoreDiagnosticsLogger');
+
+const {
+    recordStage,
+    getPerformanceStats,
+    estimateAccuracy
+} = require('./signalPerformanceEngine');
 
 const express =
     require(
@@ -22,6 +38,7 @@ const express =
 const {
     isTelegramConfigured,
     sendTradeAlert,
+    sendEarlyAlert,
     sendTestAlert
 } = require('./telegramNotifier');
 
@@ -46,6 +63,26 @@ const {
     getRealtimeCurrentCandle,
     getRealtimeConfig
 } = require('./realtimeMarketData');
+
+const {
+    trackEntryZone,
+    getEntryZoneHistory,
+    getEntryZones,
+    clearEntryZoneHistory
+} = require('./entryZoneHistoryTracker');
+
+const {
+    evaluateAdaptivePrefilter
+} = require('./adaptivePrefilter');
+
+const {
+    scanFvgBirths,
+    updateFvgBirthWithAnalysis,
+    getFvgBirths,
+    getFvgBirthHistory,
+    clearFvgBirthHistory
+} = require('./fvgBirthTracker');
+
 
 const realtimeConfig =
     getRealtimeConfig();
@@ -727,21 +764,14 @@ function getRankedSessionPairs(periodKey, limit = 5) {
 }
 
 function buildMarketPeriod(key, label) {
-    const poolSize = SESSION_PREFILTER.enabled ? SESSION_PREFILTER.poolSize : 5;
-    const rankedPairs = getRankedSessionPairs(key, poolSize);
-    const fallbackActivePairs = rankedPairs
-        .slice(0, SESSION_PREFILTER.enabled ? SESSION_PREFILTER.targetCount : 5)
-        .map(item => item.symbol);
+    const rankedPairs = getRankedSessionPairs(key, 5);
 
     return {
         key,
         label,
-        activePairs: fallbackActivePairs,
-        candidatePairs: rankedPairs.map(item => item.symbol),
+        activePairs: rankedPairs.map(item => item.symbol),
         rankedPairs,
-        selectionMode: SESSION_PREFILTER.enabled ?
-            'SESSION_RANKING_PREFILTER' :
-            'SESSION_RANKING_TOP_5'
+        selectionMode: 'SESSION_RANKING_TOP_5'
     };
 }
 
@@ -852,8 +882,7 @@ const {
     PORT,
     API_KEY,
     TWELVE_DATA_API_KEY_SOURCE,
-    PAIRS,
-    SESSION_PREFILTER
+    PAIRS
 } = require('./config');
 
 
@@ -898,11 +927,6 @@ if (
 const {
     combinedAnalysis
 } = require('./analysisEngine');
-
-const {
-    scorePrefilterPair,
-    selectActivePairs
-} = require('./sessionPrefilter');
 
 
 const {
@@ -1116,9 +1140,13 @@ async function checkExpiredPaperSignals() {
             }
 
 
+            const outcomeCandles = getLocalHistory(signal.symbol);
+            observePendingSignals(signal.symbol, currentPrice, Date.now(), { candles: outcomeCandles });
+
             resolveSignal(
                 signal.id,
-                currentPrice
+                currentPrice,
+                { candles: outcomeCandles }
             );
 
 
@@ -1413,6 +1441,133 @@ function prepareCandles(
 // PRICE API
 // ======================================================
 
+
+// ======================================================
+// v4.14.4 EVENT-DRIVEN MARKET MONITOR
+// REST remains the source for historical/heavy analysis.
+// Realtime events only re-evaluate the CURRENT known setup.
+// ======================================================
+
+const eventDrivenState = new Map();
+const EVENT_RECHECK_MIN_MS = 750;
+
+function rememberAnalysisForRealtime(symbol, analysis) {
+    if (!symbol || !analysis) return;
+
+    const zone = analysis.entryZone;
+    const diagnostics = analysis.signalDiagnostics;
+
+    eventDrivenState.set(symbol, {
+        symbol,
+        analysis,
+        updatedAt: Date.now(),
+        lastRealtimeCheckAt: 0,
+        fvgId: zone?.fvgId || null,
+        signal: analysis.signal || diagnostics?.bestDirection || null
+    });
+}
+
+function evaluateRealtimeEntryWindow(symbol, livePrice, trigger = 'PRICE') {
+    const state = eventDrivenState.get(symbol);
+    if (!state || !state.analysis) return null;
+
+    const now = Date.now();
+    if ((now - state.lastRealtimeCheckAt) < EVENT_RECHECK_MIN_MS) return null;
+    state.lastRealtimeCheckAt = now;
+
+    const analysis = state.analysis;
+    const zone = analysis.entryZone;
+    const signal = analysis.signal || analysis.signalDiagnostics?.bestDirection;
+
+    if (!zone?.available || !signal || !Number.isFinite(Number(livePrice))) {
+        return null;
+    }
+
+    const price = Number(livePrice);
+    const best = Number(zone.bestEntryPrice);
+    const last = Number(zone.lastAcceptablePrice);
+    const worst = Number(zone.worstEntryPrice);
+
+    let realtimeEntryStatus = zone.status || 'UNKNOWN';
+
+    if (signal === 'UP') {
+        if (Number.isFinite(worst) && price >= worst) realtimeEntryStatus = 'TOO LATE';
+        else if (Number.isFinite(last) && price > last) realtimeEntryStatus = 'BAD ENTRY';
+        else if (Number.isFinite(best) && price >= best) realtimeEntryStatus = 'GOOD ENTRY';
+    } else if (signal === 'DOWN') {
+        if (Number.isFinite(worst) && price <= worst) realtimeEntryStatus = 'TOO LATE';
+        else if (Number.isFinite(last) && price < last) realtimeEntryStatus = 'BAD ENTRY';
+        else if (Number.isFinite(best) && price <= best) realtimeEntryStatus = 'GOOD ENTRY';
+    }
+
+    const strengthScore = Number(analysis.signalStrength?.score || 0);
+    const confirmed =
+        Boolean(analysis.candleConfirmation?.confirmed) ||
+        String(analysis.candleConfirmation?.status || '').toUpperCase() === 'CONFIRMED';
+
+    let realtimeDecision = 'WAIT';
+
+    if (realtimeEntryStatus === 'TOO LATE') {
+        realtimeDecision = 'SKIP';
+    } else if (
+        realtimeEntryStatus === 'GOOD ENTRY' &&
+        strengthScore >= 50 &&
+        confirmed
+    ) {
+        realtimeDecision = 'TRADE';
+    }
+
+    const result = {
+        symbol,
+        trigger,
+        timestamp: new Date().toISOString(),
+        price,
+        fvgId: zone.fvgId || null,
+        signal,
+        entryStatus: realtimeEntryStatus,
+        strengthScore,
+        confirmed,
+        decision: realtimeDecision
+    };
+
+    console.log(
+        `[REALTIME CHECK] ${symbol} | ${trigger} | ${signal} | ${realtimeEntryStatus} | ` +
+        `Strength ${strengthScore} | Confirmed ${confirmed} | ${realtimeDecision}`
+    );
+
+    state.lastRealtime = result;
+    return result;
+}
+
+onRealtimePrice(({ symbol, price }) => {
+    evaluateRealtimeEntryWindow(symbol, price, 'PRICE');
+});
+
+onRealtimeClosed1mCandle(({ symbol, candle, price }) => {
+    const closePrice = Number(price ?? candle?.close);
+    if (Number.isFinite(closePrice)) {
+        evaluateRealtimeEntryWindow(symbol, closePrice, '1M CLOSE');
+    }
+});
+
+
+app.get('/api/realtime-monitor', (req, res) => {
+    const data = Array.from(eventDrivenState.values()).map(item => ({
+        symbol: item.symbol,
+        updatedAt: item.updatedAt,
+        fvgId: item.fvgId,
+        signal: item.signal,
+        lastRealtime: item.lastRealtime || null
+    }));
+
+    res.json({
+        status: 'ok',
+        mode: 'EVENT_DRIVEN_MONITOR',
+        realtimeAvailable: typeof onRealtimePrice === 'function',
+        pairs: data
+    });
+});
+
 app.get(
     '/api/price',
 
@@ -1681,6 +1836,374 @@ app.get(
     }
 );
 // ======================================================
+// FAST REST RECHECK WATCHLIST — v4.15
+// ======================================================
+// REST-only timing observer. Full scans add directional WAIT setups here.
+// Between full scans, only watched pairs are force-refreshed and re-analysed.
+// This is observational: it does not send Telegram and does not bypass any
+// existing full-scan decision gate.
+
+const fastRecheckWatchlist = new Map();
+// Keep the latest observed state briefly even after READY/SKIP is removed
+// from the active watchlist. This lets the REST-only GUI learn about terminal
+// state changes without keeping the market observer alive or spending credits.
+const fastRecheckRecent = new Map();
+const FAST_RECHECK_RECENT_TTL_MS = Math.max(
+    60 * 1000,
+    Number(process.env.FAST_RECHECK_RECENT_TTL_MS) || 5 * 60 * 1000
+);
+let fastRecheckRunning = false;
+const FAST_RECHECK_INTERVAL_MS = Math.max(
+    15 * 1000,
+    Number(process.env.FAST_RECHECK_INTERVAL_MS) || 30 * 1000
+);
+const FAST_RECHECK_MAX_AGE_MS = Math.max(
+    2 * 60 * 1000,
+    Number(process.env.FAST_RECHECK_MAX_AGE_MS) || 10 * 60 * 1000
+);
+const FAST_RECHECK_READY_TIMEOUT_MS = Math.max(
+    60 * 1000,
+    Number(process.env.FAST_RECHECK_READY_TIMEOUT_MS) || 3 * 60 * 1000
+);
+const priorityScanPending = new Set();
+
+function createSetupId(symbol, signal, createdAtMs = Date.now()) {
+    return `${String(symbol || '').replace('/', '')}-${signal}-${createdAtMs}`;
+}
+
+function requestPrioritySymbolScan(symbol, watch) {
+    if (!symbol || priorityScanPending.has(symbol) || scanInProgress) return false;
+    priorityScanPending.add(symbol);
+    const params = new URLSearchParams({ minScore: String(watch.userMinScore || 50), showWeak: '1', symbol, priority: '1' });
+    console.log('[PRIORITY SCAN] requested', symbol, '| setupId:', watch.setupId);
+    const http = require('http');
+    const request = http.get(`http://127.0.0.1:${PORT}/api/scan?${params.toString()}`, response => {
+        response.resume();
+        response.on('end', () => {
+            priorityScanPending.delete(symbol);
+            console.log('[PRIORITY SCAN] completed', symbol, '| status:', response.statusCode);
+        });
+    });
+    request.on('error', error => {
+        priorityScanPending.delete(symbol);
+        console.warn('[PRIORITY SCAN ERROR]', symbol, error.message);
+    });
+    request.setTimeout(90 * 1000, () => request.destroy(new Error('Priority scan timeout')));
+    return true;
+}
+
+function addFastRecheckWatch(symbol, signal, userMinScore, scoreWeights) {
+    if (signal !== 'UP' && signal !== 'DOWN') return;
+    const now = Date.now();
+    const existing = fastRecheckWatchlist.get(symbol);
+    // A new full-scan WAIT supersedes any old terminal GUI state.
+    fastRecheckRecent.delete(symbol);
+    const setupId = existing && existing.signal === signal ? existing.setupId : createSetupId(symbol, signal, now);
+    fastRecheckWatchlist.set(symbol, {
+        symbol,
+        signal,
+        setupId,
+        userMinScore,
+        scoreWeights: { ...scoreWeights },
+        addedAt: existing ? existing.addedAt : now,
+        updatedAt: now,
+        checks: existing ? existing.checks : 0,
+        last: existing ? existing.last : null,
+        getReadyAt: existing ? existing.getReadyAt : null,
+        readyAt: existing ? existing.readyAt : null,
+        priorityScanRequestedAt: existing ? existing.priorityScanRequestedAt : null
+    });
+    return fastRecheckWatchlist.get(symbol);
+
+    console.log(
+        '[FAST RECHECK WATCH]', symbol, signal,
+        '| watched:', fastRecheckWatchlist.size,
+        '| interval:', `${Math.round(FAST_RECHECK_INTERVAL_MS / 1000)}s`
+    );
+}
+
+function fastRecheckSnapshot() {
+    return Array.from(fastRecheckWatchlist.values()).map(item => ({
+        symbol: item.symbol,
+        signal: item.signal,
+        setupId: item.setupId || null,
+        addedAt: new Date(item.addedAt).toISOString(),
+        updatedAt: new Date(item.updatedAt).toISOString(),
+        checks: item.checks,
+        last: item.last
+    }));
+}
+
+function fastRecheckRecentSnapshot() {
+    const now = Date.now();
+    for (const [symbol, item] of fastRecheckRecent.entries()) {
+        if (!item || now - item.updatedAt > FAST_RECHECK_RECENT_TTL_MS) {
+            fastRecheckRecent.delete(symbol);
+        }
+    }
+
+    return Array.from(fastRecheckRecent.values()).map(item => ({
+        symbol: item.symbol,
+        signal: item.signal,
+        setupId: item.setupId || null,
+        updatedAt: new Date(item.updatedAt).toISOString(),
+        last: item.last
+    }));
+}
+
+async function runFastRestRecheck() {
+    if (fastRecheckRunning) {
+        console.log('[FAST RECHECK TIMER] skipped | reason: already running');
+        return;
+    }
+    if (scanInProgress) {
+        console.log('[FAST RECHECK TIMER] skipped | reason: full scan in progress | watched:', fastRecheckWatchlist.size);
+        return;
+    }
+    if (fastRecheckWatchlist.size === 0) return;
+
+    console.log('[FAST RECHECK TIMER] running | watched:', fastRecheckWatchlist.size);
+    fastRecheckRunning = true;
+    try {
+        for (const [symbol, watch] of Array.from(fastRecheckWatchlist.entries())) {
+            const nowMs = Date.now();
+            const readyTimedOut = watch.readyAt && nowMs - watch.readyAt > FAST_RECHECK_READY_TIMEOUT_MS;
+            if (readyTimedOut || nowMs - watch.addedAt > FAST_RECHECK_MAX_AGE_MS) {
+                fastRecheckWatchlist.delete(symbol);
+                const terminalStage = readyTimedOut ? 'READY_TIMEOUT' : 'WATCH_TIMEOUT';
+                recordStage({ symbol, signal: watch.signal, setupId: watch.setupId, stage: 'SKIP', skipReason: terminalStage, currentPrice: watch.last && watch.last.price });
+                console.log('[FAST RECHECK EXPIRE]', symbol, '| reason:', terminalStage, '| setupId:', watch.setupId);
+                continue;
+            }
+
+            try {
+                // v4.14.8 Smart REST Recheck + GUI state sync:
+                // - Do NOT force the 1500-candle time_series on every 30s tick.
+                // - Refresh 1M history only when its normal ~60s REST resync is due.
+                // - Between candle refreshes, request only the lightweight current price.
+                // This keeps the observer automatic while avoiding repeated full-history calls.
+                const historyDue = localHistoryNeedsBootstrap(symbol);
+                const closedCandles = historyDue
+                    ? await bootstrapLocalHistory(symbol, false)
+                    : getLocalHistory(symbol);
+
+                let livePrice = null;
+                let priceSource = 'LOCAL_LAST_CLOSE';
+
+                if (historyDue) {
+                    const restSnapshot = latestRestSnapshots.get(symbol) || null;
+                    if (restSnapshot && Number.isFinite(Number(restSnapshot.livePrice))) {
+                        livePrice = Number(restSnapshot.livePrice);
+                        priceSource = 'TIME_SERIES';
+                    }
+                }
+
+                // A price request is cheap compared with repeatedly downloading 1500 candles.
+                // getPrice() already has its own 15s cache, so accidental duplicate checks coalesce.
+                try {
+                    const priceData = await getPrice(symbol);
+                    const candidatePrice = Number(priceData && priceData.price);
+                    if (Number.isFinite(candidatePrice)) {
+                        livePrice = candidatePrice;
+                        priceSource = priceData && priceData._marketData && priceData._marketData.source
+                            ? `PRICE_${priceData._marketData.source}`
+                            : 'PRICE_API';
+                    }
+                } catch (priceError) {
+                    console.warn('[SMART REST PRICE]', symbol, '| fallback:', priceError.message);
+                }
+
+                if (!Number.isFinite(livePrice) && closedCandles.length) {
+                    livePrice = Number(closedCandles[0].close);
+                }
+
+                console.log(
+                    '[SMART REST RECHECK]', symbol,
+                    '| history:', historyDue ? 'REFRESHED' : 'REUSED',
+                    '| price:', priceSource
+                );
+
+                if (!Number.isFinite(livePrice) || closedCandles.length < 200) continue;
+
+                // Reuse the price we already fetched for Fast Recheck; no extra REST credit.
+                observePendingSignals(symbol, livePrice, Date.now(), { candles: closedCandles });
+
+                const analysis = combinedAnalysis(symbol, closedCandles, livePrice, {
+                    userMinScore: watch.userMinScore,
+                    scoreWeights: watch.scoreWeights
+                });
+
+                const signal = analysis && (analysis.signal || analysis.bestDirection);
+                const entryZone = analysis && analysis.entryZone ? analysis.entryZone : {};
+                const strength = analysis && analysis.signalStrength ? analysis.signalStrength : {};
+                const cc = analysis && analysis.candleConfirmation ? analysis.candleConfirmation : null;
+                const diagnostics = analysis && analysis.signalDiagnostics ? analysis.signalDiagnostics : {};
+                const score = Number(diagnostics.bestDirectionScore ?? analysis.bestDirectionScore ?? 0);
+                const requiredScore = Number(diagnostics.requiredScore ?? diagnostics.effectiveMinScore ?? 0);
+
+                const entryStatus = String(entryZone.status || '').toUpperCase();
+                const entryQuality = String(entryZone.currentEntryQuality || '').toUpperCase();
+                const strengthRecommendation = String(strength.recommendation || '').toUpperCase();
+                // Persistent Candidate Watch (v4.17.3): a candidate that was deliberately
+                // placed on the watchlist must not be removed merely because it is still below
+                // the final TRADE score. Keep observing while it remains above the candidate floor.
+                // Final GET_READY/TRADE thresholds remain unchanged.
+                const candidateWatchFloor = Number(diagnostics.candidateWatchFloor ?? 35);
+                const hardBlock =
+                    signal !== watch.signal ||
+                    score < candidateWatchFloor ||
+                    diagnostics.contextSetupConflict === true ||
+                    entryStatus.includes('TOO LATE') ||
+                    entryQuality.includes('DO NOT ENTER') ||
+                    entryQuality.includes('WORST ENTRY') ||
+                    strengthRecommendation.includes('NOT RECOMMENDED');
+                const wait = !hardBlock && (
+                    strengthRecommendation.includes('WAIT') ||
+                    entryStatus.includes('WAIT') ||
+                    !(cc && cc.confirmed === true)
+                );
+                const state = hardBlock ? 'SKIP' : (wait ? 'WAIT' : 'READY');
+
+                const tf = cc && cc.timeframes ? cc.timeframes : {};
+                const fmt = value => {
+                    if (!value || value.available === false) return 'N/A';
+                    const label = value.confirmed ? 'YES' : (value.opposite ? 'OPPOSITE' : 'NO');
+                    return `${label} ${value.expectedScore ?? 0}/${value.oppositeScore ?? 0}`;
+                };
+
+                watch.checks += 1;
+                watch.updatedAt = Date.now();
+                watch.last = {
+                    at: new Date().toISOString(),
+                    state,
+                    score,
+                    requiredScore,
+                    candidateWatchFloor,
+                    entryStatus: entryZone.status || null,
+                    entryQuality: entryZone.currentEntryQuality || null,
+                    strength: strength.recommendation || strength.level || null,
+                    candleConfirmed: Boolean(cc && cc.confirmed),
+                    m1: fmt(tf.m1),
+                    m3: fmt(tf.m3),
+                    m5: fmt(tf.m5),
+                    price: livePrice,
+                    // Full WAIT snapshot for REST-only GUI live refresh.
+                    // Keep this focused on display fields so /api/fast-recheck stays lightweight.
+                    gui: {
+                        livePrice,
+                        currentPrice: livePrice,
+                        scoreUp: Number(analysis.upScore) || 0,
+                        scoreDown: Number(analysis.downScore) || 0,
+                        marketBias: analysis.marketBias || diagnostics.marketBias || null,
+                        signalStage: analysis.signalStage || diagnostics.signalStage || null,
+                        entryZone: entryZone || null,
+                        signalStrength: strength || null,
+                        candleConfirmation: cc || null,
+                        signalDiagnostics: diagnostics || null,
+                        strategyName: analysis.strategyName || analysis.strategy || null,
+                        referencePrice: analysis.referencePrice || livePrice,
+                        watchPrice: analysis.watchPrice !== undefined ? analysis.watchPrice : null,
+                        historicalEffectiveness: estimateAccuracy({
+                            symbol, signal: watch.signal, score, entryZone,
+                            signalStrength: strength, candleConfirmation: cc,
+                            signalDiagnostics: diagnostics
+                        }, getSignalHistory(5000))
+                    }
+                };
+
+                fastRecheckRecent.set(symbol, {
+                    symbol,
+                    signal: watch.signal,
+                    setupId: watch.setupId,
+                    updatedAt: watch.updatedAt,
+                    last: { ...watch.last }
+                });
+
+                console.log(
+                    '[FAST RECHECK]', symbol, watch.signal,
+                    '| state:', state,
+                    '| score:', `${score}/${requiredScore}`,
+                    '| candidate floor:', candidateWatchFloor,
+                    '| entry:', entryZone.status || entryZone.currentEntryQuality || 'N/A',
+                    '| strength:', strength.recommendation || strength.level || 'N/A',
+                    '| candle:', cc && cc.confirmed ? 'CONFIRMED' : 'WAIT',
+                    '| 1M:', fmt(tf.m1),
+                    '| 3M:', fmt(tf.m3),
+                    '| 5M:', fmt(tf.m5)
+                );
+
+                const perfPayload = {
+                    symbol,
+                    signal: watch.signal,
+                    setupId: watch.setupId,
+                    stage: state,
+                    score,
+                    requiredScore,
+                    currentPrice: livePrice,
+                    marketBias: analysis.marketBias,
+                    signalStage: analysis.signalStage,
+                    entryZone,
+                    signalStrength: strength,
+                    candleConfirmation: cc,
+                    signalDiagnostics: diagnostics,
+                    strategyName: analysis.strategyName || analysis.strategy || null
+                };
+                recordStage(perfPayload);
+
+                const frEntry = String(entryZone.currentEntryQuality || entryZone.status || '').toUpperCase();
+                const frStrength = Number(strength.score) || 0;
+                const frGetReady = state === 'WAIT' && score >= requiredScore &&
+                    Number(diagnostics.actualEdge || 0) >= Number(diagnostics.requiredEdge || 0) &&
+                    diagnostics.contextSetupConflict !== true && frStrength >= 45 &&
+                    !frEntry.includes('BAD') && !frEntry.includes('WORST') && !frEntry.includes('DO NOT ENTER') &&
+                    !String(entryZone.status || '').toUpperCase().includes('TOO LATE');
+                if (frGetReady && !watch.getReadyAt) {
+                    watch.getReadyAt = Date.now();
+                    const gr = { ...perfPayload, stage: 'GET_READY' };
+                    recordStage(gr);
+                    sendEarlyAlert(gr)
+                        .then(r => console.log(r.sent ? '[TELEGRAM EARLY SENT]' : '[TELEGRAM EARLY SKIP]', symbol, '|', r.reason || 'GET_READY'))
+                        .catch(e => console.error('[TELEGRAM EARLY ERROR]', symbol, e.message));
+                }
+
+                // v5.0: READY is a transition, not a terminal state. Keep observing and
+                // request the strict full pipeline for this pair immediately.
+                if (state === 'READY') {
+                    if (!watch.readyAt) watch.readyAt = Date.now();
+                    const lastPriority = Number(watch.priorityScanRequestedAt || 0);
+                    if (Date.now() - lastPriority >= 30 * 1000 && requestPrioritySymbolScan(symbol, watch)) {
+                        watch.priorityScanRequestedAt = Date.now();
+                    }
+                }
+                if (state === 'SKIP') {
+                    console.log('[FAST RECHECK REMOVE]', symbol, '| invalidated | setupId:', watch.setupId);
+                    fastRecheckWatchlist.delete(symbol);
+                }
+            } catch (error) {
+                console.warn('[FAST RECHECK ERROR]', symbol, error.message);
+            }
+        }
+    } finally {
+        fastRecheckRunning = false;
+    }
+}
+
+setInterval(runFastRestRecheck, FAST_RECHECK_INTERVAL_MS);
+
+app.get('/api/fast-recheck', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        enabled: true,
+        mode: 'SMART_REST_OBSERVATIONAL',
+        intervalMs: FAST_RECHECK_INTERVAL_MS,
+        maxAgeMs: FAST_RECHECK_MAX_AGE_MS,
+        running: fastRecheckRunning,
+        watched: fastRecheckSnapshot(),
+        recent: fastRecheckRecentSnapshot()
+    });
+});
+
+// ======================================================
 // SCANNER
 // ======================================================
 
@@ -1688,6 +2211,66 @@ app.get(
 // and running the same analysis twice when the Scan button is clicked
 // repeatedly or two clients call /api/scan at the same time.
 let scanInProgress = false;
+
+// v4.17.1 — server-side Auto Scan.
+// The first manual /api/scan arms one repeating scan every 10 minutes.
+// It keeps running while the Node server is alive, even if the browser is closed.
+const AUTO_SCAN_INTERVAL_MS = Math.max(10 * 60 * 1000, Number(process.env.AUTO_SCAN_INTERVAL_MS) || 10 * 60 * 1000);
+let autoScanTimer = null;
+let autoScanEnabled = false;
+let autoScanQuery = 'minScore=50&showWeak=1';
+let autoScanLastStartedAt = null;
+let autoScanNextAt = null;
+
+function scheduleAutoScan() {
+    if (autoScanTimer) clearTimeout(autoScanTimer);
+    if (!autoScanEnabled) return;
+    autoScanNextAt = new Date(Date.now() + AUTO_SCAN_INTERVAL_MS).toISOString();
+    autoScanTimer = setTimeout(() => {
+        autoScanTimer = null;
+        if (scanInProgress) {
+            console.log('[AUTO SCAN] skipped: scan already in progress');
+            scheduleAutoScan();
+            return;
+        }
+        autoScanLastStartedAt = new Date().toISOString();
+        console.log('[AUTO SCAN] starting | next cycle interval:', Math.round(AUTO_SCAN_INTERVAL_MS / 60000), 'min');
+        const http = require('http');
+        const request = http.get(`http://127.0.0.1:${PORT}/api/scan?${autoScanQuery}&auto=1`, response => {
+            response.resume();
+            response.on('end', () => scheduleAutoScan());
+        });
+        request.on('error', error => {
+            console.warn('[AUTO SCAN ERROR]', error.message);
+            scheduleAutoScan();
+        });
+        request.setTimeout(Math.max(60000, AUTO_SCAN_INTERVAL_MS), () => request.destroy(new Error('Auto scan request timeout')));
+    }, AUTO_SCAN_INTERVAL_MS);
+}
+
+function armAutoScanFromRequest(req) {
+    if (String(req.query.auto || '') === '1' || String(req.query.priority || '') === '1') return;
+    const params = new URLSearchParams();
+    for (const key of ['minScore', 'showWeak', 'weights']) {
+        if (req.query[key] !== undefined) params.set(key, String(req.query[key]));
+    }
+    autoScanQuery = params.toString() || 'minScore=50&showWeak=1';
+    if (!autoScanEnabled) console.log('[AUTO SCAN] armed after manual scan | interval:', Math.round(AUTO_SCAN_INTERVAL_MS / 60000), 'min');
+    autoScanEnabled = true;
+    scheduleAutoScan();
+}
+
+app.get('/api/auto-scan', (req, res) => {
+    res.json({
+        status: 'ok',
+        enabled: autoScanEnabled,
+        intervalMs: AUTO_SCAN_INTERVAL_MS,
+        intervalMinutes: AUTO_SCAN_INTERVAL_MS / 60000,
+        lastStartedAt: autoScanLastStartedAt,
+        nextAt: autoScanNextAt,
+        scanInProgress
+    });
+});
 
 app.get(
     '/api/scan',
@@ -1710,6 +2293,8 @@ app.get(
                 message: 'A scan is already in progress. Please wait for it to finish.'
             });
         }
+
+        armAutoScanFromRequest(req);
 
         scanInProgress = true;
 
@@ -1756,8 +2341,11 @@ app.get(
             true;
 
 
+        // v4.9.8 Unified Candidate Gate:
+        // Keep server weak-watch output consistent with analysisEngine.
+        // 35-<required = CANDIDATE / WAIT, below 35 = NO SIGNAL.
         const weakSetupMinScore =
-            0;
+            35;
 
 
         const defaultScoreWeights = {
@@ -1811,62 +2399,189 @@ app.get(
             getActiveMarketPeriod();
 
 
-        let activePairs =
-            Array.isArray(marketPeriod.activePairs) ?
-            marketPeriod.activePairs.slice(0, 5) : [];
+        // ==============================================
+        // ADAPTIVE SESSION PREFILTER — v4.14.4
+        // ==============================================
+        // 17 pairs -> session Top 8 -> lightweight local
+        // prefilter -> dynamic Top 5 -> existing scanner.
+        // The prefilter never creates a signal and cannot
+        // bypass Score / Entry / Candle / TOO LATE gates.
+        // ==============================================
 
-        let prefilter = null;
-
-        // v4.9.4: rank Top-8 using already-required 1M history, then run the
-        // unchanged full scanner only on up to five viable pairs.
-        if (SESSION_PREFILTER.enabled && marketPeriod.key !== 'ROLLOVER') {
-            const candidates = Array.isArray(marketPeriod.rankedPairs) ?
-                marketPeriod.rankedPairs.slice(0, SESSION_PREFILTER.poolSize) : [];
-            const maxSessionScore = candidates.reduce(
-                (max, item) => Math.max(max, Number(item.sessionScore || 0)), 0
+        const sessionTop8 =
+            getRankedSessionPairs(
+                marketPeriod.key,
+                8
             );
-            const scored = [];
-            const prefilterErrors = [];
 
-            for (const candidate of candidates) {
+        const prefilterRanking = [];
+
+        if (
+            marketPeriod.key !== 'ROLLOVER' &&
+            sessionTop8.length
+        ) {
+
+            const maxSessionScore =
+                Math.max(
+                    1,
+                    ...sessionTop8.map(
+                        item => Number(item.sessionScore) || 0
+                    )
+                );
+
+            for (const item of sessionTop8) {
                 try {
-                    const history = await bootstrapLocalHistory(candidate.symbol);
-                    scored.push(scorePrefilterPair(
-                        candidate.symbol, history, candidate.sessionScore, maxSessionScore
-                    ));
-                } catch (error) {
-                    prefilterErrors.push({ symbol: candidate.symbol, error: error.message });
-                    console.warn('[PREFILTER ERROR]', candidate.symbol, error.message);
+                    // IMPORTANT v4.13.1:
+                    // Prefilter must NOT bootstrap all Top-8 pairs.
+                    // Doing 8 sequential 1500-candle REST bootstraps before
+                    // the normal scanner loop can make the scan look frozen
+                    // and can exhaust/rate-limit the data provider.
+                    //
+                    // Prefilter uses LOCAL history only. If a pair has not
+                    // been bootstrapped yet, it stays eligible through a
+                    // lightweight session fallback. The normal full-analysis
+                    // loop bootstraps only the selected Top-5 pairs.
+                    const history =
+                        getLocalHistory(
+                            item.symbol
+                        );
+
+                    if (
+                        Array.isArray(history) &&
+                        history.length >= 120
+                    ) {
+                        // Observe structural FVG birth only from already
+                        // available CLOSED local candles.
+                        const bornZones =
+                            scanFvgBirths(
+                                item.symbol,
+                                history
+                            );
+
+                        if (bornZones.length) {
+                            console.log(
+                                '[FVG BIRTH]',
+                                item.symbol,
+                                '| New:',
+                                bornZones.length
+                            );
+                        }
+
+                        const prefilter =
+                            evaluateAdaptivePrefilter({
+                                symbol: item.symbol,
+                                oneMinuteCandles: history,
+                                sessionScore: item.sessionScore,
+                                maxSessionScore: maxSessionScore
+                            });
+
+                        prefilterRanking.push({
+                            ...prefilter,
+                            sessionScore: item.sessionScore,
+                            historyReady: true
+                        });
+
+                    } else {
+                        // Fail-open fallback for a cold start.
+                        // Session score is mapped into the 0..100 ranking
+                        // space so scanner remains responsive and the pair
+                        // can still be selected for normal bootstrap.
+                        const sessionOnlyScore =
+                            Math.round(
+                                Math.max(
+                                    0,
+                                    Math.min(
+                                        100,
+                                        (
+                                            (Number(item.sessionScore) || 0) /
+                                            maxSessionScore
+                                        ) * 100
+                                    )
+                                ) * 10
+                            ) / 10;
+
+                        prefilterRanking.push({
+                            symbol: item.symbol,
+                            prefilterScore: sessionOnlyScore,
+                            priorityScore: sessionOnlyScore,
+                            opportunityBonus: 0,
+                            contextDirection: 'UNKNOWN',
+                            components: {
+                                context30M: 0,
+                                setup15M: 0,
+                                momentum5M: 0,
+                                volatilityATR: 0,
+                                sessionRelevance:
+                                    Math.round(
+                                        (
+                                            (Number(item.sessionScore) || 0) /
+                                            maxSessionScore
+                                        ) * 10
+                                    )
+                            },
+                            entryOpportunity: null,
+                            currentPrice: null,
+                            sessionScore: item.sessionScore,
+                            historyReady: false,
+                            fallbackReason:
+                                'LOCAL_HISTORY_NOT_READY'
+                        });
+                    }
+
+                } catch (prefilterError) {
+                    console.warn(
+                        '[PREFILTER ERROR]',
+                        item.symbol,
+                        prefilterError.message
+                    );
                 }
             }
-
-            const selection = selectActivePairs(
-                scored, candidates.map(item => item.symbol)
-            );
-            activePairs = selection.selectedSymbols;
-            prefilter = {
-                enabled: true,
-                poolSize: candidates.length,
-                targetCount: SESSION_PREFILTER.targetCount,
-                minScore: SESSION_PREFILTER.minScore,
-                qualifiedCount: selection.qualifiedCount,
-                fallbackUsed: selection.fallbackUsed,
-                selectedPairs: activePairs,
-                ranked: selection.ranked,
-                errors: prefilterErrors
-            };
-
-            console.log('');
-            console.log('[PREFILTER]', marketPeriod.label, '| candidates:', candidates.length);
-            for (const item of selection.ranked) {
-                console.log('[PREFILTER]', item.symbol,
-                    String(item.prefilterScore).padStart(3, ' '),
-                    item.prefilterScore >= SESSION_PREFILTER.minScore ? 'PASS' : 'REJECT');
-            }
-            console.log('[PREFILTER] Selected:', activePairs.length ? activePairs.join(', ') : 'NONE');
         }
 
-        marketPeriod.activePairs = activePairs.slice();
+        const passedPrefilter =
+            prefilterRanking
+            .filter(
+                item => Number(item.prefilterScore) >= 28
+            )
+            .sort(
+                (a, b) =>
+                    Number(b.priorityScore) -
+                    Number(a.priorityScore)
+            );
+
+        // If fewer than 5 pass 28, fill remaining slots
+        // with the strongest successfully evaluated pairs.
+        const fallbackPrefilter =
+            prefilterRanking
+            .slice()
+            .sort(
+                (a, b) =>
+                    Number(b.priorityScore) -
+                    Number(a.priorityScore)
+            );
+
+        const selectedPrefilter = [];
+        const selectedSymbols = new Set();
+
+        for (const row of [
+            ...passedPrefilter,
+            ...fallbackPrefilter
+        ]) {
+            if (selectedSymbols.has(row.symbol)) {
+                continue;
+            }
+
+            selectedSymbols.add(row.symbol);
+            selectedPrefilter.push(row);
+
+            if (selectedPrefilter.length >= 5) {
+                break;
+            }
+        }
+
+        const requestedPrioritySymbol = String(req.query.symbol || '').trim();
+        const activePairs = requestedPrioritySymbol ? [requestedPrioritySymbol] : selectedPrefilter.map(item => item.symbol);
+        if (requestedPrioritySymbol) console.log('[PRIORITY SCAN] strict full-pipeline single pair:', requestedPrioritySymbol);
 
 
         // ==============================================
@@ -1912,6 +2627,28 @@ app.get(
             activePairs.join(
                 ', '
             ) :
+            'NONE'
+        );
+
+
+        console.log(
+            'Prefilter Top 8:',
+            prefilterRanking.length ?
+            prefilterRanking
+            .slice()
+            .sort(
+                (a, b) =>
+                    Number(b.priorityScore) -
+                    Number(a.priorityScore)
+            )
+            .map(
+                row =>
+                    `${row.symbol}:${row.prefilterScore}` +
+                    (row.opportunityBonus ?
+                        `(+${row.opportunityBonus})` :
+                        '')
+            )
+            .join(', ') :
             'NONE'
         );
 
@@ -2153,6 +2890,58 @@ app.get(
                 }
 
 
+                // ======================================
+                // FVG BIRTH TRACKER — POST REFRESH
+                // v4.14.4
+                // ======================================
+                //
+                // Important when WebSocket is disconnected:
+                // the prefilter can only see the LOCAL history
+                // that existed before this scan. The normal
+                // scanner may then REST-resync and receive a
+                // newly CLOSED 1M candle / newly formed FVG.
+                //
+                // Therefore scan births again AFTER bootstrap/
+                // resync and BEFORE full analysis. Zone IDs are
+                // deterministic, so already-known FVGs are not
+                // duplicated.
+                // ======================================
+
+                try {
+                    const bornAfterRefresh =
+                        scanFvgBirths(
+                            symbol,
+                            closedCandles
+                        );
+
+                    if (bornAfterRefresh.length) {
+                        for (const born of bornAfterRefresh) {
+                            console.log(
+                                '[FVG BIRTH]',
+                                symbol,
+                                '| ID:',
+                                born.zoneId,
+                                '|',
+                                born.direction,
+                                born.timeframe,
+                                '| Formed:',
+                                born.formationDatetime,
+                                '| First seen:',
+                                born.firstSeenAt,
+                                '| Best:',
+                                born.bestEntryPrice
+                            );
+                        }
+                    }
+                } catch (birthRefreshError) {
+                    console.warn(
+                        '[FVG BIRTH POST-REFRESH ERROR]',
+                        symbol,
+                        birthRefreshError.message
+                    );
+                }
+
+
                 const restSnapshot =
                     latestRestSnapshots.get(
                         symbol
@@ -2390,6 +3179,118 @@ app.get(
                                 scoreWeights
                         }
                     );
+        rememberAnalysisForRealtime(symbol, analysis);
+
+                // ======================================
+                // CANDLE AUDIT — v4.14.4
+                // Diagnostic only. Runs for every analyzed pair before any
+                // later WAIT/SKIP/continue path. 5M does NOT change decision.
+                try {
+                    const cc = analysis && analysis.candleConfirmation;
+                    const signalForAudit = analysis && (analysis.signal || analysis.bestDirection);
+                    if (cc && (signalForAudit === 'UP' || signalForAudit === 'DOWN')) {
+                        const m1 = cc.timeframes && cc.timeframes.m1;
+                        const m3 = cc.timeframes && cc.timeframes.m3;
+                        const m5 = cc.timeframes && cc.timeframes.m5;
+                        const fmt = (tf) => {
+                            if (!tf || tf.available === false) return 'N/A';
+                            const state = tf.confirmed ? 'CONFIRMED' : (tf.opposite ? 'OPPOSITE' : 'NO');
+                            return `${state} ${tf.expectedScore ?? 0}/${tf.oppositeScore ?? 0}`;
+                        };
+                        console.log(
+                            '[CANDLE AUDIT]', symbol, signalForAudit,
+                            '| final:', cc.status || 'N/A',
+                            '| combined:', `${cc.score ?? 0}/${cc.oppositeScore ?? 0}`,
+                            '| 1M:', fmt(m1),
+                            '| 3M:', fmt(m3),
+                            '| 5M:', fmt(m5),
+                            '| 5M diagnostic only:', true
+                        );
+                    }
+                } catch (auditError) {
+                    console.warn('[CANDLE AUDIT ERROR]', symbol, auditError.message);
+                }
+
+
+                // ======================================
+                // PERSISTENT ZONE HISTORY — v4.12.3
+                // ======================================
+                // Persist before any later WAIT/SKIP/continue path.
+                try {
+                    const persistedZone =
+                        trackEntryZone(
+                            symbol,
+                            analysis
+                        );
+
+                    if (persistedZone) {
+                        analysis.entryZoneHistory =
+                            persistedZone;
+
+                        console.log(
+                            '[ZONE HISTORY]',
+                            symbol,
+                            '| ID:',
+                            persistedZone.zoneId,
+                            '| First:',
+                            persistedZone.firstSeenAt,
+                            '| State:',
+                            persistedZone.latest &&
+                                persistedZone.latest.state,
+                            '| Final:',
+                            persistedZone.finalState || '-'
+                        );
+                    }
+                } catch (e) {
+                    console.warn(
+                        '[ZONE HISTORY ERROR]',
+                        symbol,
+                        e.message
+                    );
+                }
+
+
+                // ======================================
+                // FVG BIRTH -> ANALYSIS LINK — v4.13
+                // ======================================
+                try {
+                    const birthRecord =
+                        updateFvgBirthWithAnalysis(
+                            symbol,
+                            analysis
+                        );
+
+                    if (birthRecord) {
+                        analysis.fvgBirthHistory =
+                            birthRecord;
+                    }
+                } catch (e) {
+                    console.warn(
+                        '[FVG BIRTH UPDATE ERROR]',
+                        symbol,
+                        e.message
+                    );
+                }
+
+
+                // ======================================
+                // SCORE DIAGNOSTIC HISTORY — v4.9.6
+                // ======================================
+                // Instrumentation only: does not change signal/filter logic.
+                try {
+                    logScoreDiagnostic(
+                        symbol,
+                        analysis
+                    );
+                } catch (
+                    diagnosticError
+                ) {
+                    console.error(
+                        '[SCORE TRACE ERROR]',
+                        symbol,
+                        diagnosticError.message
+                    );
+                }
 
 
                 // ======================================
@@ -2451,9 +3352,287 @@ app.get(
                         ) || 0;
 
 
+                    // v4.9.7: the legacy weak-watch row must respect
+                    // Context + Setup alignment. It is display/watch logic
+                    // only and must not advertise the opposite direction.
+                    const weakDirectionMatchesAlignment =
+                        diagnostics.contextSetupAligned ===
+                            true &&
+                        (
+                            (
+                                diagnostics.contextDirection ===
+                                    'BULLISH' &&
+                                weakDirection ===
+                                    'UP'
+                            ) ||
+                            (
+                                diagnostics.contextDirection ===
+                                    'BEARISH' &&
+                                weakDirection ===
+                                    'DOWN'
+                            )
+                        );
+
+
+                    const zoneLifecycle =
+                        analysis.entryZoneLifecycle &&
+                        typeof analysis.entryZoneLifecycle ===
+                            'object'
+                            ?
+                            analysis.entryZoneLifecycle
+                            :
+                            null;
+
+
+                    const showZoneLifecycle =
+                        Boolean(
+                            zoneLifecycle &&
+                            zoneLifecycle.active === true &&
+                            (
+                                zoneLifecycle.state === 'IN ZONE' ||
+                                zoneLifecycle.state === 'APPROACHING' ||
+                                zoneLifecycle.state === 'TRACKING' ||
+                                zoneLifecycle.state === 'MISSED'
+                            )
+                        );
+
+
+                    const preOpportunityWatch =
+                        analysis.preEntryOpportunityWatch &&
+                        typeof analysis.preEntryOpportunityWatch ===
+                            'object'
+                            ?
+                            analysis.preEntryOpportunityWatch
+                            :
+                            null;
+
+
+                    const isPreOpportunity =
+                        Boolean(
+                            preOpportunityWatch &&
+                            preOpportunityWatch.active ===
+                                true
+                        );
+
+
+                    if (
+                        isPreOpportunity
+                    ) {
+
+                        const preZone =
+                            preOpportunityWatch.entryZone &&
+                            typeof preOpportunityWatch.entryZone ===
+                                'object'
+                                ?
+                                preOpportunityWatch.entryZone
+                                :
+                                {};
+
+
+                        console.log(
+                            '[SCAN PRE-OPPORTUNITY]',
+                            symbol,
+                            preOpportunityWatch.direction,
+                            '| Score:',
+                            preOpportunityWatch.score,
+                            '| Setup: NEUTRAL',
+                            '| Zone:',
+                            preZone.status ||
+                                'NO ENTRY ZONE'
+                        );
+
+
+                        decisions.push({
+                            symbol,
+                            action:
+                                'PRE-OPPORTUNITY',
+                            decision:
+                                'PRE-OPPORTUNITY',
+                            reasonCode:
+                                'PRE_ENTRY_OPPORTUNITY_WATCH',
+                            reason:
+                                preOpportunityWatch.reason,
+                            signal:
+                                preOpportunityWatch.direction,
+                            score:
+                                preOpportunityWatch.score,
+                            requiredScore:
+                                weakRequiredScore,
+                            actualEdge:
+                                weakEdge,
+                            requiredEdge:
+                                weakRequiredEdge,
+                            entryStatus:
+                                preZone.status ||
+                                'WATCH',
+                            entryQuality:
+                                preZone.currentEntryQuality ||
+                                'PRE-OPPORTUNITY',
+                            bestEntryPrice:
+                                preZone.bestEntryPrice ??
+                                null,
+                            lastAcceptablePrice:
+                                preZone.lastAcceptablePrice ??
+                                null,
+                            worstEntryPrice:
+                                preZone.worstEntryPrice ??
+                                null,
+                            currentPrice:
+                                preZone.currentPrice ??
+                                null,
+                            strength:
+                                'PRE-OPPORTUNITY WATCH',
+                            expirationMinutes:
+                                null,
+                            expirationAt:
+                                null,
+                            candidateOnly:
+                                false,
+                            opportunityOnly:
+                                false,
+                            preOpportunityOnly:
+                                true
+                        });
+
+
+                        continue;
+                    }
+
+
+                    const opportunityWatch =
+                        analysis.entryOpportunityWatch &&
+                        typeof analysis.entryOpportunityWatch ===
+                            'object'
+                            ?
+                            analysis.entryOpportunityWatch
+                            :
+                            null;
+
+
+                    const isEntryOpportunity =
+                        Boolean(
+                            opportunityWatch &&
+                            opportunityWatch.active ===
+                                true &&
+                            weakScore >=
+                                Number(
+                                    opportunityWatch.floor ||
+                                    30
+                                ) &&
+                            weakScore <
+                                weakSetupMinScore
+                        );
+
+
+                    if (
+                        isEntryOpportunity
+                    ) {
+
+                        const opportunityZone =
+                            opportunityWatch.entryZone &&
+                            typeof opportunityWatch.entryZone ===
+                                'object'
+                                ?
+                                opportunityWatch.entryZone
+                                :
+                                {};
+
+
+                        console.log(
+                            '[SCAN OPPORTUNITY]',
+                            symbol,
+                            weakDirection,
+                            '| Score:',
+                            weakScore,
+                            '| Candidate Floor:',
+                            weakSetupMinScore,
+                            '| Zone:',
+                            opportunityZone.status ||
+                                'NO ENTRY ZONE'
+                        );
+
+
+                        decisions.push({
+                            symbol:
+                                symbol,
+
+                            action:
+                                'OPPORTUNITY',
+
+                            decision:
+                                'OPPORTUNITY',
+
+                            reasonCode:
+                                'ENTRY_OPPORTUNITY_WATCH',
+
+                            reason:
+                                opportunityWatch.reason ||
+                                'Early aligned setup near Entry Zone',
+
+                            signal:
+                                weakDirection,
+
+                            score:
+                                weakScore,
+
+                            requiredScore:
+                                weakRequiredScore,
+
+                            actualEdge:
+                                weakEdge,
+
+                            requiredEdge:
+                                weakRequiredEdge,
+
+                            entryStatus:
+                                opportunityZone.status ||
+                                'WATCH',
+
+                            entryQuality:
+                                opportunityZone.currentEntryQuality ||
+                                'EARLY WATCH',
+
+                            bestEntryPrice:
+                                opportunityZone.bestEntryPrice ??
+                                null,
+
+                            lastAcceptablePrice:
+                                opportunityZone.lastAcceptablePrice ??
+                                null,
+
+                            worstEntryPrice:
+                                opportunityZone.worstEntryPrice ??
+                                null,
+
+                            currentPrice:
+                                opportunityZone.currentPrice ??
+                                null,
+
+                            strength:
+                                'EARLY ENTRY WATCH',
+
+                            expirationMinutes:
+                                null,
+
+                            expirationAt:
+                                null,
+
+                            candidateOnly:
+                                false,
+
+                            opportunityOnly:
+                                true
+                        });
+
+
+                        continue;
+                    }
+
+
                     const isWeakWatchCandidate =
                         showWeakSetups &&
                         weakDirection &&
+                        weakDirectionMatchesAlignment &&
                         weakScore >=
                             weakSetupMinScore &&
                         weakScore <
@@ -2485,6 +3664,8 @@ app.get(
                             weakDirection,
                             '| Score:',
                             weakScore,
+                            '| Candidate Floor:',
+                            weakSetupMinScore,
                             '| Required:',
                             weakRequiredScore
                         );
@@ -2554,6 +3735,73 @@ app.get(
 
 
                         continue;
+                    }
+
+
+                    if (
+                        showZoneLifecycle
+                    ) {
+                        console.log(
+                            '[SCAN ZONE]',
+                            symbol,
+                            zoneLifecycle.direction,
+                            '| State:',
+                            zoneLifecycle.state,
+                            '| Score:',
+                            zoneLifecycle.score,
+                            '| Best:',
+                            zoneLifecycle.bestEntryPrice
+                        );
+
+
+                        decisions.push({
+                            symbol,
+                            action:
+                                'ZONE WATCH',
+                            decision:
+                                'ZONE WATCH',
+                            reasonCode:
+                                'ENTRY_ZONE_LIFECYCLE',
+                            reason:
+                                zoneLifecycle.reason,
+                            signal:
+                                zoneLifecycle.direction,
+                            score:
+                                zoneLifecycle.score,
+                            requiredScore:
+                                zoneLifecycle.requiredScore,
+                            actualEdge:
+                                weakEdge,
+                            requiredEdge:
+                                weakRequiredEdge,
+                            entryStatus:
+                                zoneLifecycle.state,
+                            entryQuality:
+                                zoneLifecycle.zoneStatus ||
+                                zoneLifecycle.state,
+                            bestEntryPrice:
+                                zoneLifecycle.bestEntryPrice,
+                            lastAcceptablePrice:
+                                zoneLifecycle.lastAcceptablePrice,
+                            worstEntryPrice:
+                                zoneLifecycle.worstEntryPrice,
+                            currentPrice:
+                                zoneLifecycle.currentPrice,
+                            strength:
+                                'ZONE LIFECYCLE',
+                            expirationMinutes:
+                                null,
+                            expirationAt:
+                                null,
+                            candidateOnly:
+                                false,
+                            opportunityOnly:
+                                false,
+                            preOpportunityOnly:
+                                false,
+                            zoneWatchOnly:
+                                true
+                        });
                     }
 
 
@@ -2796,19 +4044,6 @@ app.get(
 
 
                 // ======================================
-                // ENTRY ENGINE / CANDLE CONFIRMATION
-                // ======================================
-
-                const entryEngine =
-                    analysis.entryEngine ||
-                    analysis.entryTiming ||
-                    null;
-
-                const candleConfirmation =
-                    analysis.candleConfirmation ||
-                    null;
-
-                // ======================================
                 // EXECUTION GATE
                 // ======================================
 
@@ -2818,29 +4053,14 @@ app.get(
                 const entryQuality = String(entryZone.currentEntryQuality || '').toUpperCase();
                 const strengthRecommendation = String(signalStrength.recommendation || '').toUpperCase();
 
-                const entryEngineStatus = String(
-                    entryEngine && entryEngine.status || ''
-                ).toUpperCase();
-
-                const candleConfirmed = Boolean(
-                    candleConfirmation &&
-                    candleConfirmation.confirmed === true
-                );
-
                 const hardEntryBlock =
                     entryStatus.includes('TOO LATE') ||
                     entryQuality.includes('DO NOT ENTER') ||
                     entryQuality.includes('WORST ENTRY') ||
-                    strengthRecommendation.includes('NOT RECOMMENDED') ||
-                    entryEngineStatus.includes('TOO LATE') ||
-                    entryEngineStatus.includes('MTF CONFLICT');
+                    strengthRecommendation.includes('NOT RECOMMENDED');
 
-                // v4.9.2 hard gate: a high Score can never bypass missing
-                // closed-candle confirmation or a non-actionable Entry Engine.
                 const waitEntry =
                     !hardEntryBlock && (
-                        !candleConfirmed ||
-                        entryEngineStatus !== 'ENTER NOW' ||
                         strengthRecommendation.includes('WAIT') ||
                         entryStatus.includes('WAIT')
                     );
@@ -2860,6 +4080,52 @@ app.get(
 
                     if (executionAction === 'WAIT') {
                         scanStats.waits++;
+                        const lifecycleWatch = addFastRecheckWatch(
+                            symbol,
+                            signal,
+                            userMinScore,
+                            scoreWeights
+                        );
+
+
+                        const earlyPayload = {
+                            setupId: lifecycleWatch && lifecycleWatch.setupId,
+                            symbol,
+                            signal,
+                            stage: 'WAIT',
+                            score,
+                            requiredScore: analysis.signalDiagnostics?.requiredScore || analysis.signalDiagnostics?.effectiveMinScore,
+                            currentPrice: livePrice,
+                            marketBias: analysis.marketBias,
+                            signalStage: analysis.signalStage,
+                            entryZone,
+                            signalStrength,
+                            candleConfirmation: analysis.candleConfirmation || null,
+                            signalDiagnostics: analysis.signalDiagnostics || null,
+                            strategyName: primaryStrategy?.name || analysis.strategyName || analysis.strategy || null
+                        };
+                        recordStage(earlyPayload);
+
+                        const earlyEntry = String(entryZone.currentEntryQuality || entryZone.status || '').toUpperCase();
+                        const earlyStrength = Number(signalStrength.score) || 0;
+                        const earlyDiag = analysis.signalDiagnostics || {};
+                        const isGetReady =
+                            Number(score) >= Number(earlyDiag.requiredScore ?? earlyDiag.effectiveMinScore ?? 0) &&
+                            Number(earlyDiag.actualEdge || 0) >= Number(earlyDiag.requiredEdge || 0) &&
+                            earlyDiag.contextSetupConflict !== true &&
+                            earlyStrength >= 45 &&
+                            !earlyEntry.includes('BAD') &&
+                            !earlyEntry.includes('WORST') &&
+                            !earlyEntry.includes('DO NOT ENTER') &&
+                            !String(entryZone.status || '').toUpperCase().includes('TOO LATE');
+
+                        if (isGetReady) {
+                            const getReadyPayload = { ...earlyPayload, stage: 'GET_READY' };
+                            recordStage(getReadyPayload);
+                            sendEarlyAlert(getReadyPayload)
+                                .then(r => console.log(r.sent ? '[TELEGRAM EARLY SENT]' : '[TELEGRAM EARLY SKIP]', symbol, '|', r.reason || 'GET_READY'))
+                                .catch(e => console.error('[TELEGRAM EARLY ERROR]', symbol, e.message));
+                        }
                     } else {
                         scanStats.skips++;
                     }
@@ -2872,6 +4138,11 @@ app.get(
                         entryStatus: entryZone.status || null,
                         entryQuality: entryZone.currentEntryQuality || null,
                         strength: signalStrength.recommendation || signalStrength.level || null,
+                        historicalEffectiveness: estimateAccuracy({
+                            symbol, signal, score, entryZone, signalStrength,
+                            candleConfirmation: analysis.candleConfirmation || null,
+                            signalDiagnostics: analysis.signalDiagnostics || null
+                        }, getSignalHistory(5000)),
 
                         strategyName:
                             primaryStrategy &&
@@ -2904,6 +4175,16 @@ app.get(
 
                     continue;
                 }
+
+
+                // ======================================
+                // ENTRY ENGINE
+                // ======================================
+
+                const entryEngine =
+                    analysis.entryEngine ||
+                    analysis.entryTiming ||
+                    null;
 
 
                 // ======================================
@@ -3167,6 +4448,8 @@ app.get(
                     'Signal age:',
                     signalAge
                 );
+                // Telegram alert is sent only AFTER the current TRADE result is pushed below.
+
                 // ======================================
                 // SIGNAL LOGGER
                 // ======================================
@@ -3180,8 +4463,10 @@ app.get(
 
                     try {
 
+                        const activeLifecycleWatch = fastRecheckWatchlist.get(symbol);
                         logSignal({
 
+                            setupId: activeLifecycleWatch && activeLifecycleWatch.signal === signal ? activeLifecycleWatch.setupId : null,
                             symbol: symbol,
 
                             signal: signal,
@@ -3242,6 +4527,9 @@ app.get(
                             signalAge: signalAge,
 
                             signalStrength: signalStrength,
+
+                            candleConfirmation: analysis.candleConfirmation || null,
+                            decision: 'TRADE',
 
                             entryZone: entryZone,
 
@@ -3350,23 +4638,9 @@ app.get(
 
                     symbol: symbol,
 
-                    signal: signal,
-
                     decision: 'TRADE',
 
-                    candleId: candleData.newestClosedCandle &&
-                        candleData.newestClosedCandle.datetime ?
-                        String(candleData.newestClosedCandle.datetime) :
-                        (Number.isFinite(signalCandleCloseMs) ? String(signalCandleCloseMs) : null),
-
-                    analysisId: [
-                        symbol,
-                        signal,
-                        candleData.newestClosedCandle && candleData.newestClosedCandle.datetime ?
-                            String(candleData.newestClosedCandle.datetime) :
-                            (Number.isFinite(signalCandleCloseMs) ? String(signalCandleCloseMs) : 'NO_CANDLE'),
-                        String(score)
-                    ].join('|'),
+                    signal: signal,
 
                     score: score,
 
@@ -3505,6 +4779,9 @@ app.get(
                     // ----------------------------------
 
                     signalStrength: signalStrength,
+
+                    candleConfirmation: analysis.candleConfirmation || null,
+                    candleConfirmation5mDiagnostic: analysis.candleConfirmation?.alternative5m || null,
 
 
                     // ----------------------------------
@@ -3773,36 +5050,55 @@ app.get(
                 });
 
                 // ======================================
-                // TELEGRAM TRADE ALERT
+                // TELEGRAM — CURRENT FINAL TRADE ONLY
                 // ======================================
-                // Send the CURRENT trade object only after it has been fully
-                // constructed. WAIT / SKIP never reach this point.
                 const currentTradeResult = results[results.length - 1];
+                const lifecycleWatch = fastRecheckWatchlist.get(symbol);
+                const recentLifecycle = fastRecheckRecent.get(symbol);
+                currentTradeResult.setupId = currentTradeResult.setupId ||
+                    (lifecycleWatch && lifecycleWatch.setupId) ||
+                    (recentLifecycle && recentLifecycle.setupId) ||
+                    createSetupId(symbol, signal);
+                currentTradeResult.historicalEffectiveness = estimateAccuracy({
+                    ...currentTradeResult,
+                    entryZone,
+                    signalStrength,
+                    candleConfirmation: analysis.candleConfirmation || null,
+                    signalDiagnostics: analysis.signalDiagnostics || null
+                }, getSignalHistory(5000));
+                recordStage({
+                    ...currentTradeResult,
+                    stage: 'TRADE',
+                    signalStrength: currentTradeResult?.signalStrength || signalStrength,
+                    candleConfirmation: currentTradeResult?.candleConfirmation || analysis.candleConfirmation || null,
+                    signalDiagnostics: currentTradeResult?.signalDiagnostics || analysis.signalDiagnostics || null
+                });
+                console.log(
+                    '[DECISION TRACE]', symbol,
+                    '| decision:', currentTradeResult?.decision || 'UNKNOWN',
+                    '| entry:', entryZone.status || 'N/A',
+                    '| strength:', signalStrength.score ?? 'N/A'
+                );
+
+                if (lifecycleWatch && lifecycleWatch.signal === signal) {
+                    fastRecheckWatchlist.delete(symbol);
+                    fastRecheckRecent.set(symbol, {
+                        symbol, signal, setupId: currentTradeResult.setupId, updatedAt: Date.now(),
+                        last: { ...(lifecycleWatch.last || {}), state: 'TRADE', setupId: currentTradeResult.setupId }
+                    });
+                    console.log('[SIGNAL LIFECYCLE] TRADE terminal', symbol, '| setupId:', currentTradeResult.setupId);
+                }
 
                 sendTradeAlert(currentTradeResult)
                     .then(telegramResult => {
                         if (telegramResult.sent) {
-                            console.log(
-                                '[TELEGRAM SENT]',
-                                symbol,
-                                signal,
-                                '| Score:',
-                                score
-                            );
-                        } else if (telegramResult.reason === 'DUPLICATE_SIGNAL') {
-                            console.log(
-                                '[TELEGRAM SKIP]',
-                                symbol,
-                                'duplicate signal'
-                            );
+                            console.log('[TELEGRAM SENT]', symbol, signal, '| Score:', score);
+                        } else {
+                            console.log('[TELEGRAM SKIP]', symbol, '| reason:', telegramResult.reason || 'UNKNOWN');
                         }
                     })
                     .catch(error => {
-                        console.error(
-                            '[TELEGRAM ERROR]',
-                            symbol,
-                            error.message
-                        );
+                        console.error('[TELEGRAM ERROR]', symbol, error.message);
                     });
 
 
@@ -3948,9 +5244,17 @@ app.get(
 
 
         console.log(
-            'Active signals:',
+            'Final TRADE signals:',
             results.length
         );
+
+
+        const decisionSummary = decisions.reduce((acc, item) => {
+            const key = String(item?.action || item?.decision || 'UNKNOWN').toUpperCase();
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, {});
+        console.log('Decision summary:', decisionSummary);
 
 
         console.log(
@@ -4041,20 +5345,28 @@ app.get(
 
                 activePairs: activePairs,
 
-                candidatePairs: marketPeriod.candidatePairs || activePairs,
-
-                selectionMode: marketPeriod.selectionMode,
-
                 scannerEnabled: activePairs.length >
-                    0
+                    0,
+
+                selectionMode:
+                    'ADAPTIVE_SESSION_PREFILTER_TOP8_TO_TOP5',
+
+                prefilterMinimum: 28,
+
+                sessionTop8: sessionTop8,
+
+                prefilterRanking:
+                    prefilterRanking
+                    .slice()
+                    .sort(
+                        (a, b) =>
+                            Number(b.priorityScore) -
+                            Number(a.priorityScore)
+                    ),
+
+                prefilterSelected:
+                    selectedPrefilter
             },
-
-
-            // ==========================================
-            // PREFILTER DIAGNOSTICS
-            // ==========================================
-
-            prefilter: prefilter,
 
 
             // ==========================================
@@ -4108,9 +5420,62 @@ app.get(
 
         } finally {
             scanInProgress = false;
+
+            // v4.14.8: do not wait for the next 30s interval boundary.
+            // A full scan may itself occupy the timer window, so kick one
+            // REST-only observational recheck immediately after it finishes.
+            if (fastRecheckWatchlist.size > 0) {
+                console.log('[FAST RECHECK TIMER] post-scan kick scheduled | watched:', fastRecheckWatchlist.size);
+                setTimeout(() => {
+                    runFastRestRecheck().catch(error => {
+                        console.warn('[FAST RECHECK ERROR] post-scan kick', error.message);
+                    });
+                }, 1000);
+            }
         }
     }
 );
+// ======================================================
+// FVG BIRTH TRACKER API — v4.13
+// ======================================================
+
+app.get(
+    '/api/fvg-births',
+    (req, res) => {
+        res.json({
+            status: 'ok',
+            zones: getFvgBirths({
+                symbol: req.query.symbol || null,
+                limit: req.query.limit || 100
+            })
+        });
+    }
+);
+
+app.get(
+    '/api/fvg-birth-history',
+    (req, res) => {
+        res.json({
+            status: 'ok',
+            history: getFvgBirthHistory({
+                symbol: req.query.symbol || null,
+                zoneId: req.query.zoneId || null,
+                limit: req.query.limit || 100
+            })
+        });
+    }
+);
+
+app.post(
+    '/api/fvg-birth-history/clear',
+    (req, res) => {
+        res.json(
+            clearFvgBirthHistory()
+        );
+    }
+);
+
+
 // ======================================================
 // TELEGRAM TEST
 // ======================================================
@@ -4563,7 +5928,7 @@ app.get(
 
             status: 'ok',
 
-            server: 'Market Data Scanner v7 Modular — v4.9.4 Prefilter',
+            server: 'Market Data Scanner v7 Modular',
 
             mode: 'PAPER_ANALYSIS',
 
@@ -4621,6 +5986,124 @@ app.get(
     }
 );
 
+
+// ======================================================
+// SCORE DIAGNOSTIC HISTORY — v4.9.6
+// ======================================================
+
+app.get(
+    '/api/score-diagnostics',
+
+    (
+        req,
+        res
+    ) => {
+
+        const limit =
+            Math.min(
+                Math.max(
+                    Number(
+                        req.query.limit ||
+                        100
+                    ),
+                    1
+                ),
+                1000
+            );
+
+        const symbol =
+            req.query.symbol ?
+            String(
+                req.query.symbol
+            ) :
+            null;
+
+        try {
+
+            const results =
+                getScoreDiagnosticHistory(
+                    limit,
+                    symbol
+                );
+
+            res.json({
+                status: 'ok',
+                count: results.length,
+                symbol: symbol,
+                results: results
+            });
+
+        } catch (
+            error
+        ) {
+
+            console.error(
+                '[SCORE DIAGNOSTICS ERROR]',
+                error.message
+            );
+
+            res
+                .status(
+                    500
+                )
+                .json({
+                    status: 'error',
+                    error: error.message
+                });
+        }
+    }
+);
+
+
+app.post(
+    '/api/score-diagnostics/clear',
+
+    (
+        req,
+        res
+    ) => {
+
+        try {
+            res.json(
+                clearScoreDiagnosticHistory()
+            );
+        } catch (
+            error
+        ) {
+            res
+                .status(
+                    500
+                )
+                .json({
+                    status: 'error',
+                    error: error.message
+                });
+        }
+    }
+);
+
+
+// ======================================================
+// SIGNAL PERFORMANCE / HISTORICAL EFFECTIVENESS
+// ======================================================
+app.get('/api/signal-performance', (req, res) => {
+    try { res.json({ status:'ok', ...getPerformanceStats() }); }
+    catch (error) { res.status(500).json({status:'error', error:error.message}); }
+});
+
+app.get('/api/signal-effectiveness', (req, res) => {
+    try {
+        const sample = {
+            symbol: req.query.symbol || null,
+            signal: String(req.query.signal || '').toUpperCase(),
+            score: Number(req.query.score),
+            entryQuality: req.query.entryQuality || null,
+            strengthScore: Number(req.query.strength),
+            candleConfirmation: { confirmed: String(req.query.candleConfirmed).toLowerCase() === 'true' }
+        };
+        res.json({ status:'ok', query:sample, effectiveness:estimateAccuracy(sample, getSignalHistory(5000)) });
+    } catch (error) { res.status(500).json({status:'error', error:error.message}); }
+});
 
 // ======================================================
 // SIGNAL HISTORY
@@ -4873,7 +6356,7 @@ app.post(
 );
 
 
-// ======================================================
+// ======================================================\n// v5.0 PAPER OUTCOME ENGINE\n//\n// Samples pending signal prices once per minute. Requests pass through the\n// existing REST Credit Manager, and Fast Recheck prices are reused above.\n// This keeps 3/5/10/15m outcomes plus sampled MFE/MAE persistent on disk.\n// ======================================================\n\nconst OUTCOME_SAMPLE_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.OUTCOME_SAMPLE_INTERVAL_MS) || 60 * 1000);\nlet outcomeSamplerRunning = false;\n\nasync function samplePendingSignalOutcomes() {\n    if (outcomeSamplerRunning || scanInProgress) return;\n    const symbols = getPendingSignalSymbols();\n    if (!symbols.length) return;\n    outcomeSamplerRunning = true;\n    try {\n        console.log('[OUTCOME ENGINE] sampling | pending symbols:', symbols.length);\n        for (const symbol of symbols) {\n            try {\n                const live = getLivePrice(symbol);\n                let price = live && live.fresh ? Number(live.price) : NaN;\n                let source = 'LOCAL/REALTIME';\n                if (!Number.isFinite(price)) {\n                    const data = await getPrice(symbol);\n                    price = Number(data && data.price);\n                    source = 'REST_PRICE';\n                }\n                if (Number.isFinite(price)) {\n                    const outcomeCandles = getLocalHistory(symbol);\n                    observePendingSignals(symbol, price, Date.now(), { candles: outcomeCandles });\n                    console.log('[OUTCOME SAMPLE]', symbol, '| price:', price, '| source:', source);\n                }\n            } catch (error) {\n                console.warn('[OUTCOME SAMPLE ERROR]', symbol, error.message);\n            }\n        }\n    } finally {\n        outcomeSamplerRunning = false;\n    }\n}\n\nsetInterval(() => samplePendingSignalOutcomes().catch(error => console.error('[OUTCOME ENGINE]', error.message)), OUTCOME_SAMPLE_INTERVAL_MS);\n\n// ======================================================
 // SIGNAL CHECKER
 // ======================================================
 //
@@ -5027,6 +6510,17 @@ app.use((error, req, res, next) => {
 // START SERVER
 // ======================================================
 
+// v4.12 persistent Entry Zone history API
+app.get('/api/entry-zones', (req,res) => {
+    res.json({status:'ok',zones:getEntryZones({symbol:req.query.symbol||null,limit:req.query.limit||100})});
+});
+app.get('/api/entry-zone-history', (req,res) => {
+    res.json({status:'ok',rows:getEntryZoneHistory({symbol:req.query.symbol||null,zoneId:req.query.zoneId||null,limit:req.query.limit||100})});
+});
+app.post('/api/entry-zone-history/clear', (req,res) => {
+    clearEntryZoneHistory(); res.json({status:'ok',cleared:true});
+});
+
 app.listen(
     PORT,
 
@@ -5051,7 +6545,7 @@ app.listen(
 
 
         console.log(
-            'Market Data Scanner v7 Modular — v4.9.4 Prefilter'
+            'Market Data Scanner v7 Modular'
         );
 
 
@@ -5171,7 +6665,7 @@ app.listen(
 
 
         console.log(
-            SESSION_PREFILTER.enabled ? 'Session fallback pairs (prefilter runs on scan):' : 'Active pairs:',
+            'Active pairs:',
             marketPeriod
             .activePairs
             .length ?

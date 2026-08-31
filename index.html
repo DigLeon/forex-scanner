@@ -1115,6 +1115,37 @@
             border:1px solid rgba(56,189,248,.55);
         }
 
+        .decision-opportunity {
+            border-left:3px solid #f59e0b;
+        }
+
+        .decision-opportunity .decision-badge {
+            color:#fef3c7;
+            background:rgba(245,158,11,.15);
+            border:1px solid rgba(245,158,11,.55);
+        }
+
+        .decision-pre-opportunity {
+            border-left:3px solid #a78bfa;
+        }
+
+        .decision-pre-opportunity .decision-badge {
+            color:#ede9fe;
+            background:rgba(167,139,250,.15);
+            border:1px solid rgba(167,139,250,.55);
+        }
+
+        .decision-zone watch,
+        .decision-zone-watch {
+            border-left:3px solid #22d3ee;
+        }
+
+        .decision-zone-watch .decision-badge {
+            color:#cffafe;
+            background:rgba(34,211,238,.15);
+            border:1px solid rgba(34,211,238,.55);
+        }
+
         .telegram-test-button{padding:8px 12px;border:1px solid #0ea5e9;border-radius:7px;background:#082f49;color:#e0f2fe;font-size:10px;font-weight:900;cursor:pointer}
         .telegram-test-button:hover{background:#0c4a6e;border-color:#38bdf8}
         .telegram-test-button:disabled{opacity:.55;cursor:not-allowed}
@@ -1135,7 +1166,7 @@
             </div>
 
             <div class="subtitle">
-                Multi-Timeframe Paper Analysis · v4.9.4 + Session Prefilter + Candle Gate
+                Multi-Timeframe Paper Analysis · v4.14.8 + Smart REST Recheck + Live GUI Sync
             </div>
 
         </div>
@@ -1168,7 +1199,7 @@
         </button>
 
         <div class="auto-scanner-badge">
-            ● REST MODE
+            ● AUTO SCAN: starts after first SCAN NOW · 10 min
         </div>
 
         <div id="scannerStatus">
@@ -1271,6 +1302,8 @@
         <div class="summary-card summary-trade"><span id="tradeCount">0</span><small>TRADE</small></div>
         <div class="summary-card summary-wait"><span id="waitCount">0</span><small>WAIT</small></div>
         <div class="summary-card summary-error"><span id="errorCount">0</span><small>Errors</small></div>
+        <div class="summary-card"><span id="paperWinRate">-</span><small>Paper Win Rate</small></div>
+        <div class="summary-card"><span id="readyConversion">-</span><small>GET READY → TRADE</small></div>
     </div>
 
     <!-- ======================================================
@@ -1467,6 +1500,10 @@
         let lastScanStats = {};
 
         let lastScannedPairCount = 0;
+
+        let fastRecheckUiTimer = null;
+        let fastRecheckUiBusy = false;
+        const FAST_RECHECK_UI_POLL_MS = 2500;
         const DEFAULT_SCORE_WEIGHTS={context:20,setup:30,entry:25,strategy:15,session:10};
 
         const SCORE_PRESETS={
@@ -1720,11 +1757,28 @@
                                 item.action ===
                                     "WAIT" ||
                                 item.action ===
-                                    "CANDIDATE"
+                                    "READY" ||
+                                item.action ===
+                                    "CANDIDATE" ||
+                                item.action ===
+                                    "OPPORTUNITY" ||
+                                item.action ===
+                                    "PRE-OPPORTUNITY" ||
+                                item.action ===
+                                    "ZONE WATCH"
                             )
                     )
                     .filter(
-                        passesMinimumScoreFilter
+                        item =>
+                            item.action ===
+                                "OPPORTUNITY" ||
+                            item.action ===
+                                "PRE-OPPORTUNITY" ||
+                            item.action ===
+                                "ZONE WATCH" ||
+                            passesMinimumScoreFilter(
+                                item
+                            )
                     );
 
 
@@ -4322,7 +4376,8 @@
                 NO_SIGNAL: "No confirmed setup",
                 "TOO LATE": "Entry already missed — do not chase",
                 "WORST ENTRY / DO NOT ENTER": "Entry already missed — do not enter",
-                "NOT RECOMMENDED": "Setup is not recommended"
+                "NOT RECOMMENDED": "Setup is not recommended",
+                "FAST RECHECK READY": "Smart recheck: setup is ready"
             };
             return map[raw] || String(raw).replaceAll("_", " ") || "No additional reason";
         }
@@ -4575,6 +4630,15 @@
                     </div>
 
                     <div class="decision-details-card">
+                        <strong>Historical Effectiveness</strong>
+                        ${
+                            (item.historicalEffectiveness || tradeResult?.historicalEffectiveness)?.estimatedPct != null
+                                ? `${escapeHtml((item.historicalEffectiveness || tradeResult?.historicalEffectiveness).estimatedPct)}% · n=${escapeHtml((item.historicalEffectiveness || tradeResult?.historicalEffectiveness).sampleSize)} · ${escapeHtml((item.historicalEffectiveness || tradeResult?.historicalEffectiveness).confidence)}`
+                                : "Collecting data — insufficient sample"
+                        }
+                    </div>
+
+                    <div class="decision-details-card">
                         <strong>Reason / Context</strong>
                         ${escapeHtml(humanDecisionReason(item))}
                     </div>
@@ -4626,6 +4690,21 @@
         }
 
 
+        async function refreshPerformanceStats() {
+            try {
+                const [signalStatsRes, perfRes] = await Promise.all([
+                    fetch('/api/signal-stats', {cache:'no-store'}),
+                    fetch('/api/signal-performance', {cache:'no-store'})
+                ]);
+                const signalStats = await signalStatsRes.json();
+                const perf = await perfRes.json();
+                const wr = document.getElementById('paperWinRate');
+                const conv = document.getElementById('readyConversion');
+                if (wr) wr.textContent = signalStats?.stats?.completed ? `${signalStats.stats.winRate}%` : '-';
+                if (conv) conv.textContent = perf?.getReady?.total ? `${perf.getReady.conversionToTradePct}%` : '-';
+            } catch (_) {}
+        }
+
         function renderDecisions(
             decisions
         ) {
@@ -4644,7 +4723,15 @@
                                 item.action ===
                                     "WAIT" ||
                                 item.action ===
-                                    "CANDIDATE"
+                                    "READY" ||
+                                item.action ===
+                                    "CANDIDATE" ||
+                                item.action ===
+                                    "OPPORTUNITY" ||
+                                item.action ===
+                                    "PRE-OPPORTUNITY" ||
+                                item.action ===
+                                    "ZONE WATCH"
                             )
                     )
                     :
@@ -4721,7 +4808,7 @@
 
 
                         return `
-                            <div class="decision-item decision-${escapeHtml(String(item.action || "WAIT").toLowerCase())}">
+                            <div class="decision-item decision-${escapeHtml(String(item.action || "WAIT").toLowerCase().replaceAll(" ", "-"))}">
 
                                 <div class="decision-pair">
                                     ${escapeHtml(item.symbol || "-")}
@@ -5270,6 +5357,127 @@
         refreshScoreWeights(false);
 
 
+        function mergeFastRecheckState(update) {
+
+            if (!update || !update.symbol || !update.last) return false;
+
+            const symbol = String(update.symbol);
+            const last = safeObject(update.last);
+            const state = String(last.state || "").toUpperCase();
+
+            const index = lastRawDecisions.findIndex(
+                item => item && item.symbol === symbol
+            );
+
+            if (index < 0) return false;
+
+            if (state === "SKIP") {
+                lastRawDecisions.splice(index, 1);
+                lastRawResults = lastRawResults.filter(
+                    item => item && item.symbol !== symbol
+                );
+
+                if (
+                    decisionDetailsPanel.classList.contains("open") &&
+                    decisionDetailsPanel.textContent.includes(symbol)
+                ) {
+                    decisionDetailsPanel.classList.remove("open");
+                    decisionDetailsPanel.innerHTML = "";
+                }
+
+                return true;
+            }
+
+            const current = lastRawDecisions[index];
+            const nextAction = state === "READY" ? "READY" : "WAIT";
+
+            lastRawDecisions[index] = {
+                ...current,
+                action: nextAction,
+                score: Number.isFinite(Number(last.score)) ? Number(last.score) : current.score,
+                entryStatus: last.entryStatus || current.entryStatus,
+                entryQuality: last.entryQuality || current.entryQuality,
+                strength: last.strength || current.strength,
+                reason: state === "READY"
+                    ? "FAST RECHECK READY"
+                    : (last.entryStatus || last.strength || current.reason),
+                fastRecheck: {
+                    state,
+                    at: last.at || update.updatedAt || null,
+                    price: last.price ?? null,
+                    candleConfirmed: Boolean(last.candleConfirmed),
+                    m1: last.m1 || null,
+                    m3: last.m3 || null,
+                    m5: last.m5 || null
+                }
+            };
+
+            return true;
+        }
+
+        function applyFastRecheckPayload(data) {
+
+            const watched = Array.isArray(data && data.watched) ? data.watched : [];
+            const recent = Array.isArray(data && data.recent) ? data.recent : [];
+            const updates = new Map();
+
+            for (const item of recent) {
+                if (item && item.symbol) updates.set(item.symbol, item);
+            }
+
+            // Active watch entries win if they are newer than the retained terminal snapshot.
+            for (const item of watched) {
+                if (item && item.symbol) updates.set(item.symbol, item);
+            }
+
+            let changed = false;
+            for (const update of updates.values()) {
+                changed = mergeFastRecheckState(update) || changed;
+            }
+
+            if (changed) {
+                applyDisplayPreferences();
+            }
+        }
+
+        async function pollFastRecheckUi() {
+
+            if (fastRecheckUiBusy || lastRawDecisions.length === 0) return;
+
+            fastRecheckUiBusy = true;
+
+            try {
+                const response = await fetch('/api/fast-recheck', {
+                    method: 'GET',
+                    cache: 'no-store'
+                });
+
+                if (!response.ok) return;
+
+                const data = await response.json();
+                applyFastRecheckPayload(data);
+            } catch (error) {
+                console.debug('Fast Recheck GUI sync:', error.message);
+            } finally {
+                fastRecheckUiBusy = false;
+            }
+        }
+
+        function startFastRecheckUiSync() {
+
+            if (fastRecheckUiTimer) {
+                clearInterval(fastRecheckUiTimer);
+            }
+
+            fastRecheckUiTimer = setInterval(
+                pollFastRecheckUi,
+                FAST_RECHECK_UI_POLL_MS
+            );
+
+            // Do one immediate local-server check after a scan finishes.
+            pollFastRecheckUi();
+        }
+
         async function runScanner() {
 
             showScanningState();
@@ -5541,6 +5749,9 @@
                     );
 
 
+                startFastRecheckUiSync();
+
+
             } catch (
                 error
             ) {
@@ -5726,7 +5937,22 @@
 
 
         scannerStatus.textContent =
-            "Ready | REST mode | press SCAN NOW";
+            "Ready | REST mode | press SCAN NOW once to start 10-minute Auto Scan";
+        refreshPerformanceStats();
+        setInterval(refreshPerformanceStats, 30000);
+
+        async function refreshAutoScanStatus() {
+            try {
+                const r = await fetch('/api/auto-scan', {cache:'no-store'});
+                const d = await r.json();
+                const badge = document.querySelector('.auto-scanner-badge');
+                if (!badge || !d.enabled) return;
+                const next = d.nextAt ? new Date(d.nextAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '--:--';
+                badge.textContent = `● AUTO SCAN: ON · ${d.intervalMinutes} min · Next ${next}`;
+            } catch (_) {}
+        }
+        refreshAutoScanStatus();
+        setInterval(refreshAutoScanStatus, 15000);
     </script>
 
 </body>

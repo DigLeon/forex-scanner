@@ -10,3 +10,9 @@ Thumbs.db
 
 # Runtime decision logs
 data/scan-decisions.jsonl
+fvg-birth-state.json
+fvg-birth-history.jsonl
+entry-zone-history.jsonl
+entry-zone-state.json
+score-diagnostics-history.jsonl
+signal-performance.json

@@ -3,6 +3,7 @@ const {
     clamp,
     round,
     toChronological,
+    aggregateCandles,
     calculateSignalAgeSeconds
 } = require('./utils');
 
@@ -222,6 +223,121 @@ function getBestImbalanceQuality(
     return best;
 }
 
+
+// ======================================================
+// ENTRY-SPECIFIC FVG SELECTION
+//
+// Structural quality alone can prefer an old HTF FVG that
+// price has already left by many ATR. For entry timing we
+// first prefer zones whose entry window is still viable,
+// then rank by proximity, freshness and structural quality.
+// This does NOT change the signal score or safety floors.
+// ======================================================
+
+function getBestEntryImbalance(
+    mtf,
+    direction,
+    currentPrice,
+    atrValue
+) {
+    const frames = [
+        ['1h', mtf && mtf.h1],
+        ['30m', mtf && mtf.m30],
+        ['15m', mtf && mtf.m15],
+        ['5m', mtf && mtf.m5],
+        ['3m', mtf && mtf.m3],
+        ['1m', mtf && mtf.m1]
+    ];
+
+    const price = Number(currentPrice);
+    const atr = Number(atrValue);
+    const hasPrice = Number.isFinite(price);
+    const hasAtr = Number.isFinite(atr) && atr > 0;
+    const now = Date.now();
+    const candidates = [];
+
+    for (const [timeframe, smc] of frames) {
+        if (!smc || !smc.imbalances) continue;
+
+        const zones = direction === 'UP'
+            ? smc.imbalances.activeBullish
+            : smc.imbalances.activeBearish;
+
+        if (!Array.isArray(zones)) continue;
+
+        for (const zone of zones) {
+            const low = Number(zone && zone.zoneLow);
+            const high = Number(zone && zone.zoneHigh);
+            if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
+
+            const zoneLow = Math.min(low, high);
+            const zoneHigh = Math.max(low, high);
+            const bestEntry = (zoneLow + zoneHigh) / 2;
+            const favorableEdge = direction === 'UP' ? zoneHigh : zoneLow;
+            const lastAllowance = hasAtr ? atr * 0.30 : Math.abs(bestEntry) * 0.00030;
+            const worstAllowance = hasAtr ? atr * 0.60 : Math.abs(bestEntry) * 0.00060;
+            const last = direction === 'UP' ? favorableEdge + lastAllowance : favorableEdge - lastAllowance;
+            const worst = direction === 'UP' ? favorableEdge + worstAllowance : favorableEdge - worstAllowance;
+
+            let entryState = 'UNKNOWN';
+            let viable = true;
+            if (hasPrice) {
+                const beyondWorst = direction === 'UP' ? price >= worst : price <= worst;
+                const beyondLast = direction === 'UP' ? price >= last : price <= last;
+                if (beyondWorst) {
+                    entryState = 'TOO_LATE';
+                    viable = false;
+                } else if (beyondLast) {
+                    entryState = 'PAST_LAST';
+                    viable = false;
+                } else if (price >= zoneLow && price <= zoneHigh) {
+                    entryState = 'IN_ZONE';
+                } else {
+                    entryState = 'APPROACHABLE';
+                }
+            }
+
+            const distanceAtr = hasPrice && hasAtr
+                ? Math.abs(price - bestEntry) / atr
+                : null;
+
+            const formedRaw = zone.formationDatetime || zone.datetime || null;
+            let ageMinutes = null;
+            if (formedRaw) {
+                const normalized = String(formedRaw).replace(' ', 'T') + (String(formedRaw).includes('Z') ? '' : 'Z');
+                const formedMs = Date.parse(normalized);
+                if (Number.isFinite(formedMs)) ageMinutes = Math.max(0, (now - formedMs) / 60000);
+            }
+
+            const structuralScore = calculateImbalanceQuality(zone, timeframe);
+            const proximityScore = distanceAtr === null ? 0 : clamp(35 - distanceAtr * 8, -45, 35);
+            const freshnessScore = ageMinutes === null ? 0 : clamp(20 - ageMinutes * 0.35, -20, 20);
+            const viabilityBonus = viable ? 100 : (entryState === 'PAST_LAST' ? -60 : -120);
+            const entryRank = viabilityBonus + structuralScore + proximityScore + freshnessScore;
+
+            candidates.push({
+                score: structuralScore,
+                entryRank,
+                timeframe,
+                zone,
+                viable,
+                entryState,
+                distanceAtr,
+                ageMinutes
+            });
+        }
+    }
+
+    if (!candidates.length) {
+        return { score: 0, timeframe: null, zone: null };
+    }
+
+    const viable = candidates.filter(item => item.viable);
+    const pool = viable.length ? viable : candidates;
+    pool.sort((a, b) => b.entryRank - a.entryRank);
+
+    return pool[0];
+}
 
 // ======================================================
 // HTF IMBALANCE CONFLUENCE
@@ -929,9 +1045,11 @@ function calculateEntryZoneEngine({
     // ==================================================
 
     const bestImbalance =
-        getBestImbalanceQuality(
+        getBestEntryImbalance(
             multiTimeframe,
-            signal
+            signal,
+            safeWatchPrice,
+            safeAtr
         );
 
     const zone =
@@ -1658,6 +1776,17 @@ function calculateEntryZoneEngine({
             ) : false,
 
 
+        fvgId: zone ?
+            zone.fvgId || null : null,
+
+        formationDatetime: zone ?
+            zone.datetime || null : null,
+
+        formationIndex: zone &&
+            Number.isFinite(Number(zone.createdIndex)) ?
+            Number(zone.createdIndex) : null,
+
+
         reason
     };
 }
@@ -1871,6 +2000,118 @@ function getNearestOpposingImbalance(
     };
 }
 
+
+
+// ======================================================
+// ENTRY ZONE LIFECYCLE TRACKER — v4.11
+//
+// Observational state only. It does not create TRADE.
+// Tracks structural zone existence independently from
+// the final signal and classifies the zone's lifecycle.
+// ======================================================
+
+function classifyEntryZoneLifecycle({
+    direction,
+    zone,
+    currentPrice,
+    score,
+    requiredScore,
+    contextDirection,
+    setupDirection
+}) {
+    if (
+        !direction ||
+        !zone ||
+        !zone.available
+    ) {
+        return {
+            active: false,
+            state: 'NO ZONE',
+            direction: direction || null,
+            reason: 'No structural entry zone is available'
+        };
+    }
+
+    let state = 'TRACKING';
+    let reason = 'Structural entry zone is being tracked';
+
+    if (
+        zone.status === 'TOO LATE' ||
+        zone.currentEntryQuality === 'WORST ENTRY / DO NOT ENTER'
+    ) {
+        state = 'MISSED';
+        reason =
+            zone.reason ||
+            'Price moved beyond the allowed structural entry boundary';
+    } else if (
+        zone.status === 'BEST ENTRY ZONE'
+    ) {
+        state = 'IN ZONE';
+        reason = 'Price is inside the preferred structural entry zone';
+    } else if (
+        zone.status === 'WAIT FOR RETEST'
+    ) {
+        state = 'APPROACHING';
+        reason = 'Price is outside the best zone and a retest may improve entry';
+    } else if (
+        zone.available
+    ) {
+        state = 'TRACKING';
+        reason = zone.reason || reason;
+    }
+
+    return {
+        active: true,
+        state,
+        direction,
+        score:
+            Number.isFinite(Number(score))
+                ? Number(score)
+                : null,
+        requiredScore:
+            Number.isFinite(Number(requiredScore))
+                ? Number(requiredScore)
+                : null,
+        contextDirection:
+            contextDirection || 'NEUTRAL',
+        setupDirection:
+            setupDirection || 'NEUTRAL',
+        currentPrice:
+            Number.isFinite(Number(currentPrice))
+                ? Number(currentPrice)
+                : null,
+        bestEntryPrice:
+            zone.bestEntryPrice ?? null,
+        bestZoneLow:
+            zone.bestZoneLow ?? null,
+        bestZoneHigh:
+            zone.bestZoneHigh ?? null,
+        lastAcceptablePrice:
+            zone.lastAcceptablePrice ?? null,
+        worstEntryPrice:
+            zone.worstEntryPrice ?? null,
+        distanceToBestAtr:
+            zone.distanceToBestAtr ?? null,
+        distanceToLastAcceptableAtr:
+            zone.distanceToLastAcceptableAtr ?? null,
+        distanceToWorstAtr:
+            zone.distanceToWorstAtr ?? null,
+        zoneStatus:
+            zone.status || null,
+        zoneQuality:
+            zone.zoneQuality ?? null,
+        
+        source: zone.source || null,
+        timeframe: zone.timeframe || null,
+        fvgId: zone.fvgId || null,
+        formationDatetime: zone.formationDatetime || null,
+        formationIndex:
+            Number.isFinite(Number(zone.formationIndex)) ?
+                Number(zone.formationIndex) :
+                null,
+        reason
+    };
+}
 
 // ======================================================
 // SIGNAL STRENGTH ENGINE
@@ -2247,6 +2488,17 @@ function calculateSignalStrength({
 
         color =
             'YELLOW';
+    } else if (
+        strength >= 40
+    ) {
+        level =
+            'WEAK';
+
+        recommendation =
+            'WAIT / WEAK';
+
+        color =
+            'YELLOW';
     }
 
     if (
@@ -2607,6 +2859,22 @@ function combinedAnalysis(
         }
 
 
+        // v4.9.7 Direction Alignment:
+        // If BOTH higher-timeframe Context and Setup agree in the
+        // opposite direction, Entry/Strategy must not overpower them.
+        // Example: BEARISH + BEARISH cannot become an UP candidate
+        // merely because a short-term strategy score is high.
+        if (
+            contextSetupAligned &&
+            contextDirection !==
+                expectedMtfDirection
+        ) {
+
+            adjustment -=
+                30;
+        }
+
+
         // Neutral higher-timeframe context reduces
         // confidence even if lower layers look attractive.
         if (
@@ -2777,9 +3045,92 @@ function combinedAnalysis(
             downScore
         );
 
+    // ==================================================
+    // ENTRY OPPORTUNITY WATCH — v4.9.9
+    // ==================================================
+    // Early observational layer only.
+    // It NEVER creates a TRADE and NEVER lowers the final score floor.
+    // It allows us to inspect the Entry Zone while aligned Context+Setup
+    // are forming, before the normal Candidate Gate (35) is reached.
+    const opportunityWatchFloor =
+        30;
+
+    const preOpportunityWatchFloor =
+        25;
+
+    const bullishPreOpportunityWatch =
+        contextDirection ===
+            'BULLISH' &&
+        setupDirection ===
+            'NEUTRAL' &&
+        upScore >=
+            preOpportunityWatchFloor &&
+        upScore <
+            opportunityWatchFloor &&
+        upScore >
+            downScore &&
+        scoreEdge >=
+            settings.minEdge;
+
+    const bearishPreOpportunityWatch =
+        contextDirection ===
+            'BEARISH' &&
+        setupDirection ===
+            'NEUTRAL' &&
+        downScore >=
+            preOpportunityWatchFloor &&
+        downScore <
+            opportunityWatchFloor &&
+        downScore >
+            upScore &&
+        scoreEdge >=
+            settings.minEdge;
+
+    const preOpportunityWatchDirection =
+        bullishPreOpportunityWatch ?
+            'UP' :
+            bearishPreOpportunityWatch ?
+                'DOWN' :
+                null;
+
+
+    const bullishOpportunityWatch =
+        contextSetupAligned &&
+        contextDirection ===
+            'BULLISH' &&
+        upScore >=
+            opportunityWatchFloor &&
+        upScore <
+            effectiveMinScore &&
+        upScore >
+            downScore &&
+        scoreEdge >=
+            settings.minEdge;
+
+    const bearishOpportunityWatch =
+        contextSetupAligned &&
+        contextDirection ===
+            'BEARISH' &&
+        downScore >=
+            opportunityWatchFloor &&
+        downScore <
+            effectiveMinScore &&
+        downScore >
+            upScore &&
+        scoreEdge >=
+            settings.minEdge;
+
+    const opportunityWatchDirection =
+        bullishOpportunityWatch ?
+            'UP' :
+            bearishOpportunityWatch ?
+                'DOWN' :
+                null;
+
+
     const bullishCandidate =
         upScore >=
-        settings.minSignalScore &&
+        effectiveMinScore &&
 
         upScore >
         downScore &&
@@ -2789,13 +3140,49 @@ function combinedAnalysis(
 
     const bearishCandidate =
         downScore >=
-        settings.minSignalScore &&
+        effectiveMinScore &&
 
         downScore >
         upScore &&
 
         scoreEdge >=
         settings.minEdge;
+
+    // v4.9.5 Candidate Gate:
+    // Preserve a strongly directional, fully aligned setup as WAIT
+    // even when it has not yet reached the final TRADE score floor.
+    // This does NOT lower the TRADE threshold.
+    const candidateWatchFloor =
+        35;
+
+    const bullishWatchCandidate =
+        contextSetupAligned &&
+        contextDirection ===
+            'BULLISH' &&
+        upScore >=
+            candidateWatchFloor &&
+        upScore <
+            effectiveMinScore &&
+        upScore >
+            downScore &&
+        scoreEdge >=
+            settings.minEdge;
+
+    const bearishWatchCandidate =
+        contextSetupAligned &&
+        contextDirection ===
+            'BEARISH' &&
+        downScore >=
+            candidateWatchFloor &&
+        downScore <
+            effectiveMinScore &&
+        downScore >
+            upScore &&
+        scoreEdge >=
+            settings.minEdge;
+
+    let candidateOnly =
+        false;
 
     if (
         contextSetupConflict
@@ -2825,6 +3212,28 @@ function combinedAnalysis(
             contextSetupAligned ?
             'CONFIRMED SETUP' :
             'EARLY SETUP';
+    } else if (
+        bullishWatchCandidate
+    ) {
+        signal =
+            'UP';
+
+        signalStage =
+            'CANDIDATE / WAIT';
+
+        candidateOnly =
+            true;
+    } else if (
+        bearishWatchCandidate
+    ) {
+        signal =
+            'DOWN';
+
+        signalStage =
+            'CANDIDATE / WAIT';
+
+        candidateOnly =
+            true;
     }
 
     // ==================================================
@@ -3003,15 +3412,263 @@ function combinedAnalysis(
             atrValue
         });
 
+
+    // v4.9.9: shadow Entry Zone for early aligned setups.
+    // This does not modify `signal`, `entryEngine`, or final decision logic.
+    // v4.11: choose a structural direction even before a final signal.
+    // Priority:
+    // 1) real signal
+    // 2) candidate/opportunity direction
+    // 3) directional Context if Setup is not in conflict
+    const lifecycleDirection =
+        signal !== 'NO SIGNAL'
+            ? signal
+            : opportunityWatchDirection
+                ? opportunityWatchDirection
+                : preOpportunityWatchDirection
+                    ? preOpportunityWatchDirection
+                    : (
+                        !contextSetupConflict &&
+                        contextDirection === 'BULLISH'
+                            ? 'UP'
+                            : !contextSetupConflict &&
+                              contextDirection === 'BEARISH'
+                                ? 'DOWN'
+                                : null
+                    );
+
+
+    const lifecycleEntryZone =
+        lifecycleDirection ?
+        calculateEntryZoneEngine({
+            signal:
+                lifecycleDirection,
+
+            multiTimeframe,
+
+            currentPrice,
+
+            watchPrice,
+
+            atrValue
+        }) :
+        null;
+
+
+    const opportunityEntryZone =
+        opportunityWatchDirection ?
+        calculateEntryZoneEngine({
+            signal:
+                opportunityWatchDirection,
+
+            multiTimeframe,
+
+            currentPrice,
+
+            watchPrice,
+
+            atrValue
+        }) :
+        null;
+
+
+    const preOpportunityEntryZone =
+        preOpportunityWatchDirection ?
+        calculateEntryZoneEngine({
+            signal:
+                preOpportunityWatchDirection,
+
+            multiTimeframe,
+
+            currentPrice,
+
+            watchPrice,
+
+            atrValue
+        }) :
+        null;
+
+
+    const preEntryOpportunityWatch = {
+        active:
+            Boolean(
+                preOpportunityWatchDirection
+            ),
+
+        direction:
+            preOpportunityWatchDirection,
+
+        floor:
+            preOpportunityWatchFloor,
+
+        ceiling:
+            opportunityWatchFloor,
+
+        score:
+            preOpportunityWatchDirection ===
+                'UP'
+                ?
+                upScore
+                :
+                preOpportunityWatchDirection ===
+                    'DOWN'
+                    ?
+                    downScore
+                    :
+                    null,
+
+        requiredScore:
+            effectiveMinScore,
+
+        edge:
+            scoreEdge,
+
+        requiredEdge:
+            settings.minEdge,
+
+        contextDirection,
+
+        setupDirection,
+
+        entryZone:
+            preOpportunityEntryZone,
+
+        reason:
+            preOpportunityWatchDirection ?
+                (
+                    preOpportunityEntryZone &&
+                    preOpportunityEntryZone.status ===
+                        'TOO LATE'
+                        ?
+                        'Directional Context detected while Setup is still neutral, but price is already beyond the structural entry zone'
+                        :
+                        'Directional Context detected while Setup is still forming; observe structural Entry Zone only'
+                ) :
+                'No pre-opportunity'
+    };
+
+
+    const entryOpportunityWatch = {
+        active:
+            Boolean(
+                opportunityWatchDirection
+            ),
+
+        direction:
+            opportunityWatchDirection,
+
+        floor:
+            opportunityWatchFloor,
+
+        score:
+            opportunityWatchDirection ===
+                'UP'
+                ?
+                upScore
+                :
+                opportunityWatchDirection ===
+                    'DOWN'
+                    ?
+                    downScore
+                    :
+                    null,
+
+        requiredScore:
+            effectiveMinScore,
+
+        edge:
+            scoreEdge,
+
+        requiredEdge:
+            settings.minEdge,
+
+        contextDirection,
+
+        setupDirection,
+
+        entryZone:
+            opportunityEntryZone,
+
+        reason:
+            opportunityWatchDirection ?
+                (
+                    opportunityEntryZone &&
+                    opportunityEntryZone.status ===
+                        'TOO LATE'
+                        ?
+                        'Aligned setup detected early, but price is already beyond the allowed entry zone'
+                        :
+                        'Aligned setup detected before final score confirmation; watch Entry Zone only'
+                ) :
+                'No early aligned opportunity'
+    };
+
+    const entryZoneLifecycle =
+        classifyEntryZoneLifecycle({
+            direction:
+                lifecycleDirection,
+
+            zone:
+                lifecycleEntryZone,
+
+            currentPrice,
+
+            score:
+                lifecycleDirection === 'UP'
+                    ? upScore
+                    : lifecycleDirection === 'DOWN'
+                        ? downScore
+                        : null,
+
+            requiredScore:
+                effectiveMinScore,
+
+            contextDirection,
+
+            setupDirection
+        });
+
+
     // ==================================================
     // CLOSED CANDLE CONFIRMATION GATE — v4.9
     // ==================================================
 
+    // Candle confirmation must receive actual CLOSED candle arrays, not SMC
+    // analysis objects from multiTimeframe.m1/m3/m5.
+    const closed1mForConfirmation = toChronological(closedCandles);
+
+    function buildFullyClosedAggregate(minutes) {
+        const aggregated = aggregateCandles(closedCandles, minutes);
+        if (!aggregated.length || !closed1mForConfirmation.length || minutes <= 1) {
+            return aggregated;
+        }
+
+        // 1M datetime is the candle-open timestamp. A higher-TF bucket is fully
+        // closed only after its final 1M member is present (e.g. 15:35..15:39
+        // for the 15:35 5M candle). Drop a partial trailing bucket.
+        const latest = closed1mForConfirmation[closed1mForConfirmation.length - 1];
+        const raw = String(latest && latest.datetime || '').replace(' ', 'T') +
+            (String(latest && latest.datetime || '').includes('Z') ? '' : 'Z');
+        const d = new Date(raw);
+        if (!Number.isFinite(d.getTime())) return aggregated;
+
+        const epochSec = Math.floor(d.getTime() / 1000);
+        const bucketSec = minutes * 60;
+        const bucketStart = Math.floor(epochSec / bucketSec) * bucketSec;
+        const finalMemberOpen = bucketStart + (minutes - 1) * 60;
+
+        if (epochSec < finalMemberOpen) {
+            return aggregated.slice(0, -1);
+        }
+        return aggregated;
+    }
+
     const candleConfirmation =
         analyzeCandleConfirmation({
             signal,
-            m1: multiTimeframe.m1,
-            m3: multiTimeframe.m3
+            m1: closed1mForConfirmation,
+            m3: buildFullyClosedAggregate(3),
+            m5: buildFullyClosedAggregate(5)
         });
 
     // ==================================================
@@ -3324,6 +3981,32 @@ function combinedAnalysis(
 
         contextSetupAligned,
 
+        candidateOnly,
+
+        candidateWatchFloor,
+
+        preOpportunityWatchFloor,
+
+        preEntryOpportunityWatchActive:
+            preEntryOpportunityWatch.active,
+
+        preEntryOpportunityWatchDirection:
+            preEntryOpportunityWatch.direction,
+
+        opportunityWatchFloor,
+
+        entryOpportunityWatchActive:
+            entryOpportunityWatch.active,
+
+        entryOpportunityWatchDirection:
+            entryOpportunityWatch.direction,
+
+        entryZoneLifecycleState:
+            entryZoneLifecycle.state,
+
+        entryZoneLifecycleDirection:
+            entryZoneLifecycle.direction,
+
         bestDirection,
 
         bestDirectionScore,
@@ -3445,6 +4128,88 @@ function combinedAnalysis(
         entryZone
     );
 
+    if (
+        preEntryOpportunityWatch.active
+    ) {
+        console.log(
+            '[PRE-OPPORTUNITY]',
+            symbol,
+            preEntryOpportunityWatch.direction,
+            '| Score:',
+            preEntryOpportunityWatch.score,
+            '| Setup:',
+            setupDirection,
+            '| Zone:',
+            preEntryOpportunityWatch.entryZone &&
+                preEntryOpportunityWatch.entryZone.status
+                ?
+                preEntryOpportunityWatch.entryZone.status
+                :
+                'NO ENTRY ZONE',
+            '| Best:',
+            preEntryOpportunityWatch.entryZone &&
+                preEntryOpportunityWatch.entryZone.bestEntryPrice !==
+                    undefined
+                ?
+                preEntryOpportunityWatch.entryZone.bestEntryPrice
+                :
+                null
+        );
+    }
+
+    if (
+        entryOpportunityWatch.active
+    ) {
+        console.log(
+            '[ENTRY OPPORTUNITY]',
+            symbol,
+            entryOpportunityWatch.direction,
+            '| Score:',
+            entryOpportunityWatch.score,
+            '| Required:',
+            entryOpportunityWatch.requiredScore,
+            '| Zone:',
+            entryOpportunityWatch.entryZone &&
+                entryOpportunityWatch.entryZone.status
+                ?
+                entryOpportunityWatch.entryZone.status
+                :
+                'NO ENTRY ZONE',
+            '| Best:',
+            entryOpportunityWatch.entryZone &&
+                entryOpportunityWatch.entryZone.bestEntryPrice !==
+                    undefined
+                ?
+                entryOpportunityWatch.entryZone.bestEntryPrice
+                :
+                null
+        );
+    }
+
+    if (
+        entryZoneLifecycle.active
+    ) {
+        console.log(
+            '[ZONE LIFECYCLE]',
+            symbol,
+            entryZoneLifecycle.direction,
+            '| State:',
+            entryZoneLifecycle.state,
+            '| Score:',
+            entryZoneLifecycle.score,
+            '| Required:',
+            entryZoneLifecycle.requiredScore,
+            '| Best:',
+            entryZoneLifecycle.bestEntryPrice,
+            '| Last:',
+            entryZoneLifecycle.lastAcceptablePrice,
+            '| Worst:',
+            entryZoneLifecycle.worstEntryPrice,
+            '| Price:',
+            entryZoneLifecycle.currentPrice
+        );
+    }
+
     console.log(
         'Signal Strength:',
         signalStrength
@@ -3480,6 +4245,10 @@ function combinedAnalysis(
         signalStage,
 
         contextSetupConflict,
+
+        candidateOnly,
+
+        candidateWatchFloor,
 
         symbol,
 
@@ -3620,6 +4389,15 @@ function combinedAnalysis(
 
         // NEW MODULE #1
         entryZone,
+
+        // v4.10 pre-opportunity observational layer
+        preEntryOpportunityWatch,
+
+        // v4.9.9 observational early-entry layer
+        entryOpportunityWatch,
+
+        // v4.11 structural zone lifecycle
+        entryZoneLifecycle,
 
         // NEW MODULE #2
         signalStrength,

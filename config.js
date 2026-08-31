@@ -47,30 +47,6 @@ const PAIRS = Object.freeze([
 ]);
 
 
-
-
-// ======================================================
-// SESSION PREFILTER (v4.9.4)
-// ======================================================
-// Rank a wider session pool, then spend the full analysis
-// only on the strongest currently-active candidates.
-// The prefilter reuses the same 1M history cache as the full scan.
-
-const SESSION_PREFILTER = Object.freeze({
-    enabled: true,
-    poolSize: 8,
-    targetCount: 5,
-    minScore: 28,
-    weights: Object.freeze({
-        context30m: 30,
-        setup15m: 25,
-        momentum5m: 20,
-        volatility: 15,
-        session: 10
-    })
-});
-
-
 // ======================================================
 // DEFAULT SETTINGS
 // ======================================================
@@ -134,6 +110,5 @@ module.exports = {
     API_KEY,
     TWELVE_DATA_API_KEY_SOURCE,
     PAIRS,
-    SESSION_PREFILTER,
     getPairSettings
 };

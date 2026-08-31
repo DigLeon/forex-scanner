@@ -12,6 +12,22 @@ const HISTORY_FILE =
     );
 
 
+// v4.17 Outcome Engine: fixed research checkpoints used for comparable statistics.
+const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15];
+const OUTCOME_FLAT_BPS = Math.max(0, Number(process.env.OUTCOME_FLAT_BPS) || 0.5);
+
+function classifyOutcome(direction, startPrice, price) {
+    const start = Number(startPrice);
+    const current = Number(price);
+    if (!Number.isFinite(start) || !Number.isFinite(current) || start <= 0) return 'INCOMPLETE';
+    const moveBps = ((current - start) / start) * 10000;
+    if (Math.abs(moveBps) <= OUTCOME_FLAT_BPS) return 'FLAT';
+    if (direction === 'UP') return moveBps > 0 ? 'WIN' : 'LOSS';
+    if (direction === 'DOWN') return moveBps < 0 ? 'WIN' : 'LOSS';
+    return 'INCOMPLETE';
+}
+
+
 // ======================================================
 // LOAD HISTORY
 // ======================================================
@@ -501,9 +517,13 @@ function logSignal(
 
 
     const researchHorizons =
-        getResearchHorizons(
-            dataAgeStatus
-        );
+        Array.from(new Set([
+            ...OUTCOME_HORIZONS_MINUTES,
+            ...getResearchHorizons(dataAgeStatus),
+            Number(expirationMinutes)
+        ].filter(v => Number.isFinite(Number(v)) && Number(v) > 0)))
+        .map(Number)
+        .sort((a, b) => a - b);
 
 
     const record = {
@@ -518,6 +538,7 @@ function logSignal(
             now
         ),
 
+        setupId: result.setupId || createSignalId(result.symbol, result.signal, now),
 
         symbol: result.symbol,
 
@@ -531,6 +552,21 @@ function logSignal(
 
         signalStage: result.signalStage ||
             null,
+
+        // Decision-quality snapshot for historical effectiveness analysis
+        decision: result.decision || result.action || 'TRADE',
+        entryStatus: result.entryZone ? (result.entryZone.status || null) : null,
+        entryQuality: result.entryZone ? (result.entryZone.currentEntryQuality || result.entryQuality || null) : (result.entryQuality || null),
+        entryScore: result.entryZone ? Number(result.entryZone.currentEntryScore ?? result.entryScore) : Number(result.entryScore),
+        strengthScore: result.signalStrength ? Number(result.signalStrength.score) : null,
+        strengthLevel: result.signalStrength ? (result.signalStrength.level || null) : null,
+        strengthRecommendation: result.signalStrength ? (result.signalStrength.recommendation || null) : null,
+        candleConfirmed: result.candleConfirmation ? result.candleConfirmation.confirmed === true : null,
+        fvgId: result.entryZone ? (result.entryZone.fvgId || null) : null,
+        fvgTimeframe: result.entryZone ? (result.entryZone.timeframe || null) : null,
+        requiredScore: result.diagnostics ? Number(result.diagnostics.requiredScore ?? result.diagnostics.effectiveMinScore) : null,
+        actualEdge: result.diagnostics ? Number(result.diagnostics.actualEdge) : null,
+        contextSetupAligned: result.diagnostics ? result.diagnostics.contextSetupAligned === true : null,
 
 
         // ==================================================
@@ -757,7 +793,19 @@ function logSignal(
         // for 5 / 10 / 15 / 20 etc.
         // ==================================================
 
-        researchResults: {}
+        researchResults: {},
+
+        // v4.17 sampled path statistics. These are PAPER observations only.
+        outcomeTracking: {
+            samples: 0,
+            lastObservedAt: null,
+            lastObservedPrice: null,
+            mfePrice: null,
+            maePrice: null,
+            mfeBps: 0,
+            maeBps: 0,
+            samplingApproximate: true
+        }
     };
 
 
@@ -794,13 +842,110 @@ function logSignal(
 }
 
 
+function parseOutcomeCandleTime(value) {
+    if (!value) return null;
+    const raw = String(value).trim();
+    const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)
+        ? raw
+        : raw.replace(' ', 'T') + 'Z';
+    const date = new Date(normalized);
+    return Number.isNaN(date.getTime()) ? null : date.getTime();
+}
+
+function historicalCloseAtOrBefore(candles, targetMs) {
+    if (!Array.isArray(candles) || !Number.isFinite(Number(targetMs))) return null;
+    let best = null;
+    for (const candle of candles) {
+        const openMs = parseOutcomeCandleTime(candle && candle.datetime);
+        const close = Number(candle && candle.close);
+        if (!Number.isFinite(openMs) || !Number.isFinite(close)) continue;
+        const closeMs = openMs + 60 * 1000;
+        if (closeMs <= targetMs && (!best || closeMs > best.closeMs)) {
+            best = { price: close, closeMs, datetime: candle.datetime };
+        }
+    }
+    return best;
+}
+
+// ======================================================
+// v5.0 OUTCOME OBSERVATION
+//
+// Samples all pending PAPER signals for a symbol, updates
+// MFE/MAE and closes 3/5/10/15-minute research horizons.
+// It intentionally does not create a trading decision.
+// ======================================================
+
+function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), options = {}) {
+    const price = Number(currentPrice);
+    const atMs = Number(observedAtMs);
+    if (!symbol || !Number.isFinite(price) || !Number.isFinite(atMs)) return [];
+
+    const history = loadHistory();
+    let changed = false;
+    const updated = [];
+
+    for (const record of history) {
+        if (record.status !== 'PENDING' || record.symbol !== symbol) continue;
+        const start = Number(record.entryPrice);
+        if (!Number.isFinite(start) || start <= 0) continue;
+
+        if (!record.outcomeTracking || typeof record.outcomeTracking !== 'object') {
+            record.outcomeTracking = { samples: 0, lastObservedAt: null, lastObservedPrice: null, mfePrice: null, maePrice: null, mfeBps: 0, maeBps: 0, samplingApproximate: true };
+        }
+        const t = record.outcomeTracking;
+        const rawBps = ((price - start) / start) * 10000;
+        const favorableBps = record.signal === 'UP' ? rawBps : -rawBps;
+        const adverseBps = -favorableBps;
+        t.samples = Number(t.samples || 0) + 1;
+        t.lastObservedAt = new Date(atMs).toISOString();
+        t.lastObservedPrice = price;
+        if (t.mfePrice === null || favorableBps > Number(t.mfeBps || 0)) { t.mfePrice = price; t.mfeBps = Math.max(0, favorableBps); }
+        if (t.maePrice === null || adverseBps > Number(t.maeBps || 0)) { t.maePrice = price; t.maeBps = Math.max(0, adverseBps); }
+
+        record.researchResults = record.researchResults || {};
+        const horizons = Array.isArray(record.researchHorizons) ? record.researchHorizons : OUTCOME_HORIZONS_MINUTES;
+        const elapsedMs = atMs - Number(record.createdAtMs || 0);
+        for (const minutes of horizons) {
+            const key = `${Number(minutes)}m`;
+            const targetMs = Number(record.createdAtMs || 0) + Number(minutes) * 60 * 1000;
+            if (record.researchResults[key] || atMs < targetMs) continue;
+            const exact = historicalCloseAtOrBefore(options.candles, targetMs);
+            const outcomePrice = exact ? exact.price : price;
+            const outcomeAtMs = exact ? exact.closeMs : atMs;
+            const outcomeRawBps = ((outcomePrice - start) / start) * 10000;
+            const outcome = classifyOutcome(record.signal, start, outcomePrice);
+            record.researchResults[key] = {
+                minutes: Number(minutes), targetAt: new Date(targetMs).toISOString(),
+                observedAt: new Date(outcomeAtMs).toISOString(), price: outcomePrice,
+                outcome, moveBps: +Math.abs(outcomeRawBps).toFixed(3),
+                signedMoveBps: +(record.signal === 'UP' ? outcomeRawBps : -outcomeRawBps).toFixed(3),
+                mfeBps: +Number(t.mfeBps || 0).toFixed(3), maeBps: +Number(t.maeBps || 0).toFixed(3),
+                approximate: !exact,
+                priceSource: exact ? 'CLOSED_1M_AT_OR_BEFORE_TARGET' : 'LIVE_SAMPLE',
+                targetDeltaMs: exact ? targetMs - exact.closeMs : atMs - targetMs
+            };
+            console.log('[OUTCOME]', record.symbol, record.signal, '|', key, outcome, '| MFE:', Number(t.mfeBps || 0).toFixed(2), 'bps | MAE:', Number(t.maeBps || 0).toFixed(2), 'bps');
+        }
+        changed = true;
+        updated.push(record);
+    }
+
+    if (changed) saveHistory(history);
+    return updated;
+}
+
+function getPendingSignalSymbols() {
+    return Array.from(new Set(loadHistory().filter(x => x.status === 'PENDING' && x.symbol).map(x => x.symbol)));
+}
+
 // ======================================================
 // RESOLVE RESULT
 // ======================================================
 
 function resolveSignal(
     id,
-    currentPrice
+    currentPrice,
+    options = {}
 ) {
 
     const history =
@@ -828,10 +973,8 @@ function resolveSignal(
     }
 
 
-    const price =
-        Number(
-            currentPrice
-        );
+    const exactExpiry = historicalCloseAtOrBefore(options.candles, Number(record.expiryAtMs));
+    const price = Number(exactExpiry ? exactExpiry.price : currentPrice);
 
 
     if (!Number.isFinite(
@@ -859,50 +1002,7 @@ function resolveSignal(
         startPrice;
 
 
-    let outcome =
-        'DRAW';
-
-
-    if (
-        record.signal ===
-        'UP'
-    ) {
-
-        if (
-            price >
-            startPrice
-        ) {
-            outcome =
-                'WIN';
-        } else if (
-            price <
-            startPrice
-        ) {
-            outcome =
-                'LOSS';
-        }
-    }
-
-
-    if (
-        record.signal ===
-        'DOWN'
-    ) {
-
-        if (
-            price <
-            startPrice
-        ) {
-            outcome =
-                'WIN';
-        } else if (
-            price >
-            startPrice
-        ) {
-            outcome =
-                'LOSS';
-        }
-    }
+    const outcome = classifyOutcome(record.signal, startPrice, price);
 
 
     record.resultPrice =
@@ -921,9 +1021,18 @@ function resolveSignal(
         'COMPLETED';
 
 
-    record.checkedAt =
-        new Date()
-        .toISOString();
+    record.checkedAt = new Date().toISOString();
+    record.resultTargetAt = Number.isFinite(Number(record.expiryAtMs))
+        ? new Date(Number(record.expiryAtMs)).toISOString()
+        : null;
+    record.resultObservedAt = exactExpiry
+        ? new Date(exactExpiry.closeMs).toISOString()
+        : record.checkedAt;
+    record.resultPriceSource = exactExpiry ? 'CLOSED_1M_AT_OR_BEFORE_EXPIRY' : 'LIVE_SAMPLE';
+    record.resultApproximate = !exactExpiry;
+    record.resultTargetDeltaMs = exactExpiry && Number.isFinite(Number(record.expiryAtMs))
+        ? Number(record.expiryAtMs) - exactExpiry.closeMs
+        : null;
 
 
     saveHistory(
@@ -1034,7 +1143,7 @@ function getSignalStats() {
         completed.filter(
             item =>
             item.result ===
-            'DRAW'
+            'FLAT'
         )
         .length;
 
@@ -1097,7 +1206,7 @@ function getSignalStats() {
                     .losses++;
             } else if (
                 item.result ===
-                'DRAW'
+                'FLAT'
             ) {
                 freshness[key]
                     .draws++;
@@ -1138,6 +1247,27 @@ function getSignalStats() {
         );
 
 
+    const horizonStats = {};
+    for (const item of history) {
+        const rr = item.researchResults || {};
+        for (const [key, value] of Object.entries(rr)) {
+            if (!value || !value.outcome) continue;
+            if (!horizonStats[key]) horizonStats[key] = { total: 0, wins: 0, losses: 0, flat: 0, winRate: 0 };
+            const h = horizonStats[key]; h.total++;
+            if (value.outcome === 'WIN') h.wins++;
+            else if (value.outcome === 'LOSS') h.losses++;
+            else if (value.outcome === 'FLAT') h.flat++;
+        }
+    }
+    Object.values(horizonStats).forEach(h => {
+        const decided = h.wins + h.losses;
+        h.winRate = decided ? Number((h.wins / decided * 100).toFixed(1)) : 0;
+    });
+
+    const tracked = history.filter(x => x.outcomeTracking && Number(x.outcomeTracking.samples) > 0);
+    const avgMfeBps = tracked.length ? Number((tracked.reduce((a,x)=>a+Number(x.outcomeTracking.mfeBps||0),0)/tracked.length).toFixed(2)) : 0;
+    const avgMaeBps = tracked.length ? Number((tracked.reduce((a,x)=>a+Number(x.outcomeTracking.maeBps||0),0)/tracked.length).toFixed(2)) : 0;
+
     return {
 
         total: history.length,
@@ -1170,6 +1300,8 @@ function getSignalStats() {
                 )
             ) : 0,
 
+        horizonStats,
+        outcomeTracking: { tracked: tracked.length, avgMfeBps, avgMaeBps, flatThresholdBps: OUTCOME_FLAT_BPS },
 
         freshness
     };
@@ -1185,5 +1317,8 @@ module.exports = {
     resolveSignal,
     getExpiredPendingSignals,
     getSignalHistory,
-    getSignalStats
+    getSignalStats,
+    observePendingSignals,
+    getPendingSignalSymbols,
+    classifyOutcome
 };

@@ -1272,6 +1272,10 @@ function getRealtimeConfig() {
 }
 
 module.exports = {
+    onRealtimePrice,
+    onRealtimeClosed1mCandle,
+    emitRealtimePrice,
+    emitRealtimeClosed1mCandle,
     configureRealtime,
     connectRealtimeMarketData,
     setRealtimeSymbols,
@@ -1281,3 +1285,40 @@ module.exports = {
     getRealtimeCurrentCandle,
     getRealtimeConfig
 };
+
+
+// ======================================================
+// v4.14 EVENT-DRIVEN MARKET MONITOR
+// ======================================================
+const realtimeListeners = {
+    price: new Set(),
+    candleClose1m: new Set()
+};
+
+function onRealtimePrice(listener) {
+    if (typeof listener !== 'function') return () => {};
+    realtimeListeners.price.add(listener);
+    return () => realtimeListeners.price.delete(listener);
+}
+
+function onRealtimeClosed1mCandle(listener) {
+    if (typeof listener !== 'function') return () => {};
+    realtimeListeners.candleClose1m.add(listener);
+    return () => realtimeListeners.candleClose1m.delete(listener);
+}
+
+function emitRealtimePrice(event) {
+    for (const listener of realtimeListeners.price) {
+        try { listener(event); } catch (error) {
+            console.error('[REALTIME PRICE LISTENER]', error?.message || error);
+        }
+    }
+}
+
+function emitRealtimeClosed1mCandle(event) {
+    for (const listener of realtimeListeners.candleClose1m) {
+        try { listener(event); } catch (error) {
+            console.error('[REALTIME CANDLE LISTENER]', error?.message || error);
+        }
+    }
+}

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const {
     num,
     clamp,
@@ -2153,7 +2154,8 @@ function detectStructure(
 
 function detectImbalances(
     candles,
-    lookback = 120
+    lookback = 120,
+    metadata = {}
 ) {
     if (!Array.isArray(candles) ||
         candles.length < 5
@@ -2246,6 +2248,13 @@ function detectImbalances(
             zones.push({
                 type: 'BULLISH',
 
+                fvgId: makeCanonicalFvgId(
+                    metadata.symbol,
+                    'UP',
+                    metadata.timeframe,
+                    candle3.datetime
+                ),
+
                 createdIndex: i,
 
                 datetime: candle3.datetime,
@@ -2287,6 +2296,13 @@ function detectImbalances(
 
             zones.push({
                 type: 'BEARISH',
+
+                fvgId: makeCanonicalFvgId(
+                    metadata.symbol,
+                    'DOWN',
+                    metadata.timeframe,
+                    candle3.datetime
+                ),
 
                 createdIndex: i,
 
@@ -3199,7 +3215,8 @@ function premiumDiscount(
 // ======================================================
 
 function analyzeSMC(
-    candles
+    candles,
+    metadata = {}
 ) {
     const structure =
         detectStructure(
@@ -3209,7 +3226,9 @@ function analyzeSMC(
 
     const imbalances =
         detectImbalances(
-            candles
+            candles,
+            120,
+            metadata
         );
 
 
@@ -3525,7 +3544,25 @@ function analyzeSMC(
 // EXPORTS
 // ======================================================
 
+
+function normalizeFvgDatetime(value) {
+    if (!value) return null;
+    return String(value).trim().replace('T', ' ').replace('Z', '').slice(0, 19);
+}
+
+function makeCanonicalFvgId(symbol, direction, timeframe, formationDatetime) {
+    const normalizedSymbol = String(symbol || '').toUpperCase();
+    const normalizedDirection = String(direction || '').toUpperCase();
+    const normalizedTimeframe = String(timeframe || '').toUpperCase();
+    const formed = normalizeFvgDatetime(formationDatetime);
+    if (!normalizedSymbol || !normalizedDirection || !normalizedTimeframe || !formed) return null;
+    const seed = [normalizedSymbol, normalizedDirection, normalizedTimeframe, formed].join('|');
+    const hash = crypto.createHash('sha1').update(seed).digest('hex').slice(0, 10);
+    return `${normalizedSymbol.replace('/', '')}-${normalizedDirection}-${normalizedTimeframe}-${hash}`;
+}
+
 module.exports = {
+    makeCanonicalFvgId,
     findSwings,
 
     mergeSwings,

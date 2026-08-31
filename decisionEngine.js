@@ -25,6 +25,8 @@ const REASON_CODES =
         WAIT_CANDLE: 'WAIT_CANDLE',
         WAIT_CONFIRMATION: 'WAIT_CONFIRMATION',
         WAIT_ENTRY_ZONE: 'WAIT_ENTRY_ZONE',
+        WAIT_SIGNAL_STRENGTH: 'WAIT_SIGNAL_STRENGTH',
+        WAIT_CANDIDATE_SCORE: 'WAIT_CANDIDATE_SCORE',
 
         SKIP_TOO_LATE: 'SKIP_TOO_LATE',
         SKIP_WORST_ENTRY: 'SKIP_WORST_ENTRY',
@@ -131,6 +133,11 @@ function makeDecision({
             safeAnalysis.signalDiagnostics
             :
             {};
+
+    const candidateOnly =
+        safeAnalysis.candidateOnly === true ||
+        diagnostics.candidateOnly === true;
+
 
 
     const entryZone =
@@ -307,6 +314,12 @@ function makeDecision({
         );
 
 
+    const signalStrengthScore =
+        numberOrNull(
+            signalStrength.score
+        );
+
+
     if (
         entryZoneStatus ===
             'TOO LATE' ||
@@ -370,7 +383,13 @@ function makeDecision({
         upper(
             signalStrength.recommendation
         ) ===
-            'NOT RECOMMENDED'
+            'NOT RECOMMENDED' &&
+        (
+            signalStrengthScore ===
+                null ||
+            signalStrengthScore <
+                40
+        )
     ) {
 
         return {
@@ -382,7 +401,11 @@ function makeDecision({
                 REASON_CODES.SKIP_NOT_RECOMMENDED,
 
             reason:
-                'Signal strength engine does not recommend the entry',
+                signalStrengthScore === null
+                    ?
+                    'Signal strength is unavailable and the entry is not recommended'
+                    :
+                    `Signal strength ${signalStrengthScore} is below hard minimum 40`,
 
             symbol:
                 symbol,
@@ -419,6 +442,7 @@ function makeDecision({
 
 
     if (
+        !candidateOnly &&
         requiredScore !==
             null &&
         score <
@@ -479,6 +503,31 @@ function makeDecision({
     // ==================================================
 
     if (
+        candidateOnly
+    ) {
+
+        return {
+
+            decision:
+                DECISIONS.WAIT,
+
+            reasonCode:
+                REASON_CODES.WAIT_CANDIDATE_SCORE,
+
+            reason:
+                `Aligned directional candidate is below final TRADE score floor; waiting for score >= ${requiredScore}`,
+
+            symbol:
+                symbol,
+
+            hardBlock:
+                false
+        };
+    }
+
+
+
+    if (
         signal !== 'NO SIGNAL' &&
         candleConfirmation.confirmed !== true
     ) {
@@ -492,6 +541,35 @@ function makeDecision({
             hardBlock: false
         };
     }
+
+    if (
+        signalStrengthScore !==
+            null &&
+        signalStrengthScore >=
+            40 &&
+        signalStrengthScore <
+            50
+    ) {
+
+        return {
+
+            decision:
+                DECISIONS.WAIT,
+
+            reasonCode:
+                REASON_CODES.WAIT_SIGNAL_STRENGTH,
+
+            reason:
+                `Signal strength ${signalStrengthScore} is borderline; waiting for stronger entry quality`,
+
+            symbol:
+                symbol,
+
+            hardBlock:
+                false
+        };
+    }
+
 
     const entryStatus =
         upper(

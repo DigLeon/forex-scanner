@@ -1,36 +1,5 @@
 const { num, clamp } = require('./utils');
 
-function parseCandleTime(candle) {
-    if (!candle || !candle.datetime) return null;
-    const raw = String(candle.datetime).trim();
-    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z';
-    const date = new Date(normalized);
-    return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function fullyClosedAggregates(m1, aggregated, minutes) {
-    if (!Array.isArray(m1) || !m1.length || !Array.isArray(aggregated)) return [];
-
-    const latestM1 = m1
-        .map(c => ({ candle:c, time:parseCandleTime(c) }))
-        .filter(x => x.time)
-        .sort((a,b) => a.time - b.time)
-        .at(-1);
-
-    if (!latestM1) return [];
-
-    // m1 contains CLOSED one-minute candles. Therefore data is known through
-    // the close of the newest 1m candle (open time + 60 seconds).
-    const knownThroughMs = latestM1.time.getTime() + 60 * 1000;
-    const bucketMs = minutes * 60 * 1000;
-
-    return aggregated.filter(candle => {
-        const start = parseCandleTime(candle);
-        return start && (start.getTime() + bucketMs <= knownThroughMs);
-    });
-}
-
-
 function stats(c) {
     const open=num(c&&c.open), high=num(c&&c.high), low=num(c&&c.low), close=num(c&&c.close);
     const range=Math.max(high-low,0), body=Math.abs(close-open);
@@ -71,13 +40,12 @@ function analyzeTf(candles,direction,timeframe) {
     };
 }
 
-function analyzeCandleConfirmation({signal,m1,m3}) {
-    const closedM3 = fullyClosedAggregates(m1, m3, 3);
+function analyzeCandleConfirmation({signal,m1,m3,m5}) {
     if(signal!=='UP'&&signal!=='DOWN') return {
         status:'NOT APPLICABLE',confirmed:false,hardOpposite:false,direction:signal||'NO SIGNAL',
         score:0,oppositeScore:0,reason:'No directional market signal',usesClosedCandles:true
     };
-    const one=analyzeTf(m1,signal,'1M'), three=analyzeTf(closedM3,signal,'3M');
+    const one=analyzeTf(m1,signal,'1M'), three=analyzeTf(m3,signal,'3M'), five=analyzeTf(m5,signal,'5M');
     const score=Math.round(one.expectedScore*.40+three.expectedScore*.60);
     const oppositeScore=Math.round(one.oppositeScore*.40+three.oppositeScore*.60);
     const hardOpposite=three.opposite===true&&oppositeScore>=40;
@@ -89,7 +57,17 @@ function analyzeCandleConfirmation({signal,m1,m3}) {
         reason:hardOpposite?`Closed 3M candle action confirms the opposite direction (${oppositeScore}/100)`:
             confirmed?`Closed-candle confirmation supports ${signal} (${score}/100)`:
             `Waiting for ${signal==='UP'?'bullish':'bearish'} closed-candle confirmation on 1M / 3M`,
-        timeframes:{m1:one,m3:three},usesClosedCandles:true
+        timeframes:{m1:one,m3:three,m5:five},
+        alternative5m:{
+            observational:true,
+            confirmed:five.confirmed===true,
+            opposite:five.opposite===true,
+            score:five.expectedScore,
+            oppositeScore:five.oppositeScore,
+            reasons:five.reasons,
+            note:'Diagnostic only: 5M does not change the final decision gate'
+        },
+        usesClosedCandles:true
     };
 }
-module.exports={analyzeCandleConfirmation,fullyClosedAggregates};
+module.exports={analyzeCandleConfirmation};

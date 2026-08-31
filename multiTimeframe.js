@@ -484,37 +484,43 @@ function analyzeMultiTimeframe(
 
     const smc1m =
         analyzeSMC(
-            candles1m
+            candles1m,
+            { symbol, timeframe: '1M' }
         );
 
 
     const smc3m =
         analyzeSMC(
-            candles3m
+            candles3m,
+            { symbol, timeframe: '3M' }
         );
 
 
     const smc5m =
         analyzeSMC(
-            candles5m
+            candles5m,
+            { symbol, timeframe: '5M' }
         );
 
 
     const smc15m =
         analyzeSMC(
-            candles15m
+            candles15m,
+            { symbol, timeframe: '15M' }
         );
 
 
     const smc30m =
         analyzeSMC(
-            candles30m
+            candles30m,
+            { symbol, timeframe: '30M' }
         );
 
 
     const smc1h =
         analyzeSMC(
-            candles1h
+            candles1h,
+            { symbol, timeframe: '1H' }
         );
 
 

@@ -18,6 +18,7 @@ const TELEGRAM_CHAT_IDS =
     );
 
 const sentSignalKeys = new Set();
+const sentEarlyKeys = new Set();
 
 function isTelegramConfigured() {
     return Boolean(TELEGRAM_ALERTS && TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_IDS.length > 0);
@@ -186,6 +187,35 @@ async function sendTelegramMessage(text) {
     };
 }
 
+
+function buildEarlyMessage(signal) {
+    const ez = signal?.entryZone || {};
+    const ss = signal?.signalStrength || {};
+    const cc = signal?.candleConfirmation || {};
+    const icon = signal?.signal === 'UP' ? '⬆️' : '⬇️';
+    return [
+        `🔔 PAPER GET READY — ${signal?.symbol || 'UNKNOWN'} ${signal?.signal || ''} ${icon}`,
+        `Score: ${Number(signal?.score) || 0}/${Number(signal?.requiredScore) || '-'}`,
+        `Strength: ${Number(ss.score) || 0} (${ss.recommendation || ss.level || '-'})`,
+        `Entry: ${ez.status || ez.currentEntryQuality || '-'}`,
+        `Price: ${formatNumber(signal?.currentPrice)}`,
+        `Best entry: ${formatNumber(ez.bestEntryPrice)}`,
+        `Candle: ${cc.confirmed ? 'CONFIRMED' : 'WAITING'}`,
+        '',
+        'Early paper-analysis alert — final confirmation may still be pending.'
+    ].join('\n');
+}
+
+async function sendEarlyAlert(signal) {
+    if (!isTelegramConfigured()) return {sent:false, reason:'TELEGRAM_DISABLED_OR_NOT_CONFIGURED'};
+    if (!signal || signal.stage !== 'GET_READY') return {sent:false, reason:'NOT_GET_READY'};
+    const key = [signal.symbol, signal.signal, signal.entryZone?.fvgId || 'NO_FVG'].join('|');
+    if (sentEarlyKeys.has(key)) return {sent:false, reason:'DUPLICATE_EARLY', key};
+    const response = await sendTelegramMessage(buildEarlyMessage(signal));
+    sentEarlyKeys.add(key);
+    return {sent:true,key,sentCount:response.sentCount,failedCount:response.failedCount,deliveries:response.deliveries};
+}
+
 async function sendTradeAlert(signal) {
     if (!isTelegramConfigured()) {
         return { sent:false, reason:'TELEGRAM_DISABLED_OR_NOT_CONFIGURED' };
@@ -240,5 +270,6 @@ async function sendTestAlert() {
 module.exports = {
     isTelegramConfigured,
     sendTradeAlert,
+    sendEarlyAlert,
     sendTestAlert
 };
