@@ -1,0 +1,278 @@
+FOREX SCANNER v5.0 — SMART AUTO SCAN PATCH
+============================================
+
+Что НЕ меняем
+-------------
+- scoring thresholds;
+- анализ сигналов;
+- Entry Engine;
+- Candle Confirmation;
+- Expiration Engine;
+- Signal Lifecycle;
+- Fast Recheck logic;
+- существующий Signal Logger / Outcome Engine.
+
+Цель: первые 100–200 TRADE собрать на неизменённом алгоритме.
+
+1. Добавь 3 новых файла в корень проекта
+----------------------------------------
+apiUsageTracker.js
+smartAutoScanGate.js
+signalStatistics.js
+
+2. signalLogger.js — гарантированный 30m research horizon
+---------------------------------------------------------
+Найди:
+
+const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15];
+
+Замени на:
+
+const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15, 30];
+
+ВАЖНО:
+Внутренний FLAT пока НЕ переименовываем в DRAW, чтобы не ломать
+существующую историю/статистику. signalStatistics.js наружу
+нормализует FLAT -> DRAW.
+
+3. marketData.js — подключи дневной REST counter
+-------------------------------------------------
+Вверху рядом с require добавь:
+
+const {
+    recordApiRequest,
+    getApiUsageStatus,
+    assertRestAllowed
+} = require('./apiUsageTracker');
+
+В requestJson(), непосредственно ПЕРЕД:
+
+await acquireTwelveRestCredit();
+
+добавь:
+
+assertRestAllowed();
+
+А непосредственно ПОСЛЕ:
+
+await acquireTwelveRestCredit();
+
+добавь:
+
+recordApiRequest('REST');
+
+Таким образом считаются именно реальные HTTP attempts.
+Cache hit и coalesced hit не считаются.
+
+В module.exports добавь:
+
+getApiUsageStatus
+
+Итого конец должен содержать также:
+    getRestCreditManagerStatus,
+    getApiUsageStatus
+
+4. server.js — импорт API status
+--------------------------------
+В destructuring import из ./marketData добавь:
+
+getApiUsageStatus
+
+5. server.js — Smart Auto Scan import
+--------------------------------------
+Рядом с другими require добавь:
+
+const {
+    createSmartAutoScanGate
+} = require('./smartAutoScanGate');
+
+После let scanInProgress = false; добавь:
+
+const smartAutoScanGate = createSmartAutoScanGate({
+    settleMs: Number(process.env.SMART_AUTO_SCAN_SETTLE_MS) || 1800
+});
+
+function requestSmartAutoScan(meta = {}) {
+    if (!autoScanEnabled) return false;
+
+    const http = require('http');
+    const params = autoScanQuery
+        ? `${autoScanQuery}&auto=1&smart=1`
+        : 'minScore=50&showWeak=1&auto=1&smart=1';
+
+    console.log(
+        '[SMART AUTO SCAN] request',
+        meta.candleDatetime || '',
+        '| dirty:',
+        meta.dirty || {}
+    );
+
+    const request = http.get(
+        `http://127.0.0.1:${PORT}/api/scan?${params}`,
+        response => {
+            response.resume();
+            response.on('end', () => {
+                console.log(
+                    '[SMART AUTO SCAN] completed | status:',
+                    response.statusCode
+                );
+            });
+        }
+    );
+
+    request.on('error', error => {
+        console.warn('[SMART AUTO SCAN ERROR]', error.message);
+    });
+
+    request.setTimeout(
+        90 * 1000,
+        () => request.destroy(new Error('Smart auto scan timeout'))
+    );
+
+    return true;
+}
+
+6. server.js — замени текущий onRealtimeClosed1mCandle
+-------------------------------------------------------
+Сейчас у тебя:
+
+onRealtimeClosed1mCandle(({ symbol, candle, price }) => {
+    const closePrice = Number(price ?? candle?.close);
+    if (Number.isFinite(closePrice)) {
+        evaluateRealtimeEntryWindow(symbol, closePrice, '1M CLOSE');
+    }
+});
+
+Замени на:
+
+onRealtimeClosed1mCandle(({ symbol, candle, price }) => {
+    const closePrice = Number(price ?? candle?.close);
+
+    if (Number.isFinite(closePrice)) {
+        evaluateRealtimeEntryWindow(symbol, closePrice, '1M CLOSE');
+    }
+
+    if (!realtimeConfig.enabled) return;
+
+    smartAutoScanGate.onClosed1m({
+        symbol,
+        candle,
+        enabled: autoScanEnabled,
+        scanInProgress: () => scanInProgress,
+        requestScan: requestSmartAutoScan
+    });
+});
+
+Это делает ОДИН полный scan на одну закрытую минуту,
+а не один scan на каждую пару.
+
+7. server.js — Candidate Discovery больше не должен жечь REST при WebSocket
+----------------------------------------------------------------------------
+В начале функции:
+
+async function refreshDiscoveryHistory(symbol) {
+
+добавь:
+
+    if (realtimeConfig.enabled) {
+        await bootstrapLocalHistory(symbol, false);
+        return getLocalHistory(symbol);
+    }
+
+После этого существующий REST-код функции оставь как fallback
+для REST-only режима.
+
+То есть при WS:
+WebSocket -> local 1m history -> Candidate Discovery
+без REST каждые 2 минуты на каждую пару.
+
+8. server.js — /api/auto-scan diagnostics
+------------------------------------------
+В JSON ответа /api/auto-scan добавь:
+
+smartCandleDriven: realtimeConfig.enabled,
+smartGate: smartAutoScanGate.getStatus(),
+apiUsage: getApiUsageStatus(),
+
+9. server.js — /api/health diagnostics
+---------------------------------------
+Добавь:
+
+apiUsage: getApiUsageStatus(),
+
+10. server.js — Statistics API
+------------------------------
+Вверху:
+
+const {
+    getSignalPerformanceStatistics
+} = require('./signalStatistics');
+
+Добавь endpoint:
+
+app.get('/api/statistics', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        status: 'ok',
+        statistics: getSignalPerformanceStatistics()
+    });
+});
+
+11. .env
+--------
+Добавь:
+
+# Smart Auto Scan waits briefly so closed 1M candles from active pairs arrive.
+SMART_AUTO_SCAN_SETTLE_MS=1800
+
+# Optional. Set this to the ACTUAL daily REST limit of your Twelve Data plan.
+# If 0 or omitted, the system counts requests but does not hard-stop REST.
+TWELVE_DAILY_REQUEST_LIMIT=0
+
+# Warning at 85% of the configured daily limit.
+TWELVE_DAILY_WARNING_RATIO=0.85
+
+12. Legacy 10-minute Auto Scan
+------------------------------
+Пока НЕ удаляй его.
+
+Он остаётся как fallback. Но чтобы он не создавал лишний duplicate scan
+при исправно работающем WebSocket, в начале callback старого 10-minute timer
+можно позже добавить проверку last smart scan. Сначала лучше 1–2 часа
+посмотреть diagnostics.
+
+13. Проверка после запуска
+--------------------------
+node server.js
+
+Проверить:
+
+GET /api/realtime-status
+GET /api/auto-scan
+GET /api/local-history-status
+GET /api/statistics
+GET /api/health
+
+В консоли после закрытия новой 1m свечи должно появляться примерно:
+
+[SMART AUTO SCAN] closed 1M: ...
+[SMART AUTO SCAN] request ...
+[SMART AUTO SCAN] completed | status: 200
+
+При WebSocket Candidate Discovery не должен печатать REST refresh
+на каждую пару каждые 2 минуты.
+
+14. Почему M3/M1 не вырезаем из combinedAnalysis прямо сейчас
+--------------------------------------------------------------
+Текущий analysisEngine строит MTF локально из 1m history. Это не расходует REST.
+Рефакторинг "не считать M3/M1 до candidate" изменит внутренний execution path.
+До набора 100–200 сигналов это нежелательно, потому что мы хотим сохранить
+алгоритм неизменённым и получить чистую статистическую выборку.
+
+После 100–200 completed TRADE можно отдельным этапом оптимизировать CPU pipeline,
+не смешивая это с текущим экспериментом.
+
+
+15. TELEGRAM SCORE FILTER
+-------------------------
+Смотри файл TELEGRAM_SCORE_FILTER.txt. Telegram отправляет только score > 60. Score 60 не отправляется.

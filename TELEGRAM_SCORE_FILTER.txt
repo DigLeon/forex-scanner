@@ -1,0 +1,81 @@
+TELEGRAM SCORE FILTER — v5.0
+============================
+
+Цель:
+В Telegram отправлять только уведомления с оценкой СТРОГО выше 60.
+
+То есть:
+60  -> НЕ отправлять
+61+ -> отправлять
+
+Это НЕ меняет:
+- генерацию TRADE;
+- GUI;
+- Signal Logger;
+- Win/Loss statistics;
+- scoring thresholds;
+- Auto Scan.
+
+Фильтр касается только Telegram-уведомлений.
+
+Файл: telegramNotifier.js
+
+1. Вверху, после TELEGRAM_CHAT_IDS, добавь:
+
+const TELEGRAM_MIN_SCORE_EXCLUSIVE = Math.max(
+    0,
+    Number(process.env.TELEGRAM_MIN_SCORE_EXCLUSIVE) || 60
+);
+
+function passesTelegramScore(signal) {
+    const score = Number(signal?.score);
+    return Number.isFinite(score) && score > TELEGRAM_MIN_SCORE_EXCLUSIVE;
+}
+
+2. В sendTradeAlert(signal), сразу ПОСЛЕ проверки:
+
+if (!signal || signal.decision !== 'TRADE') {
+    return { sent:false, reason:'NOT_A_TRADE' };
+}
+
+добавь:
+
+if (!passesTelegramScore(signal)) {
+    return {
+        sent: false,
+        reason: 'SCORE_NOT_ABOVE_TELEGRAM_MINIMUM',
+        score: Number(signal?.score) || 0,
+        minimumExclusive: TELEGRAM_MIN_SCORE_EXCLUSIVE
+    };
+}
+
+3. Чтобы GET_READY / ранние Telegram-уведомления тоже не приходили при score <= 60,
+в sendEarlyAlert(signal), после:
+
+if (!signal || signal.stage !== 'GET_READY') return {sent:false, reason:'NOT_GET_READY'};
+
+добавь:
+
+if (!passesTelegramScore(signal)) {
+    return {
+        sent: false,
+        reason: 'SCORE_NOT_ABOVE_TELEGRAM_MINIMUM',
+        score: Number(signal?.score) || 0,
+        minimumExclusive: TELEGRAM_MIN_SCORE_EXCLUSIVE
+    };
+}
+
+4. В .env добавь:
+
+TELEGRAM_MIN_SCORE_EXCLUSIVE=60
+
+Результат:
+- Score 59 -> Telegram SKIP
+- Score 60 -> Telegram SKIP
+- Score 61 -> Telegram SENT
+- Score 75 -> Telegram SENT
+
+ВАЖНО:
+Сам TRADE с score <= 60 всё равно сохраняется в историю для исследования,
+если алгоритм его допустил. Мы фильтруем только доставку в Telegram,
+чтобы не портить выборку 100–200 сигналов.
