@@ -16,3 +16,6 @@ entry-zone-history.jsonl
 entry-zone-state.json
 score-diagnostics-history.jsonl
 signal-performance.json
+
+# Runtime API usage counter
+data/api-usage.json

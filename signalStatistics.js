@@ -95,8 +95,15 @@ function getSignalPerformanceStatistics(limit = 10000) {
     const trades = history.filter(item =>
         String(item.decision || 'TRADE').toUpperCase() === 'TRADE'
     );
+    const waitAbove60 = history.filter(item =>
+        String(item.decision || '').toUpperCase() === 'WAIT' && Number(item.score) > 60
+    );
 
     const completed = trades.filter(item => normalizeOutcome(item.result));
+    const waitCompleted = waitAbove60.filter(item => normalizeOutcome(item.result));
+    const waitPending = waitAbove60.filter(item =>
+        String(item.status || '').toUpperCase() === 'PENDING'
+    ).length;
     const pending = trades.filter(item =>
         String(item.status || '').toUpperCase() === 'PENDING'
     ).length;
@@ -129,7 +136,23 @@ function getSignalPerformanceStatistics(limit = 10000) {
                 ? `${Number(item.expirationMinutes)}m`
                 : 'UNKNOWN'
         ),
-        byResearchHorizon: buildHorizonStats(trades)
+        byResearchHorizon: buildHorizonStats(trades),
+        waitAbove60: {
+            thresholdRule: 'score > 60',
+            ...summarize(waitCompleted),
+            pending: waitPending,
+            loggedWaits: waitAbove60.length,
+            byPair: group(waitCompleted, item => item.symbol || item.pair),
+            byScore: group(waitCompleted, item => scoreBand(item.score)),
+            byConfirmation: group(waitCompleted, confirmationType),
+            byRecommendedExpiration: group(
+                waitCompleted,
+                item => Number.isFinite(Number(item.expirationMinutes))
+                    ? `${Number(item.expirationMinutes)}m`
+                    : 'UNKNOWN'
+            ),
+            byResearchHorizon: buildHorizonStats(waitAbove60)
+        }
     };
 }
 

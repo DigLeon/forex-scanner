@@ -315,6 +315,35 @@ function getLocalHistory(
 }
 
 
+// ======================================================
+// SHARED REST PRICE SNAPSHOT — API ECONOMY
+// ======================================================
+// No outbound request is made here. Consumers reuse the latest
+// time_series snapshot produced by the single shared REST updater.
+function getSharedRestPrice(symbol) {
+    const snapshot = latestRestSnapshots.get(symbol) || null;
+
+    if (snapshot && Number.isFinite(Number(snapshot.livePrice))) {
+        return {
+            price: Number(snapshot.livePrice),
+            source: 'SHARED_TIME_SERIES',
+            ageMs: Math.max(0, Date.now() - Number(snapshot.refreshedAt || 0))
+        };
+    }
+
+    const history = getLocalHistory(symbol);
+    if (history.length && Number.isFinite(Number(history[0].close))) {
+        return {
+            price: Number(history[0].close),
+            source: 'LOCAL_LAST_CLOSE',
+            ageMs: null
+        };
+    }
+
+    return { price: null, source: 'NONE', ageMs: null };
+}
+
+
 function localHistoryNeedsBootstrap(
     symbol
 ) {
@@ -398,17 +427,21 @@ async function bootstrapLocalHistory(
                         symbol,
                         force ?
                         'FORCE REST SYNC' :
-                        'REST BOOTSTRAP'
+                        (getLocalHistory(symbol).length ? 'REST INCREMENTAL' : 'REST BOOTSTRAP')
                     );
 
+
+                    const existingHistory = getLocalHistory(symbol);
+                    const isInitialBootstrap = existingHistory.length === 0;
+                    const requestedOutputsize = isInitialBootstrap
+                        ? 1500
+                        : Math.max(3, Math.min(20, Number(process.env.REST_INCREMENTAL_CANDLES) || 5));
 
                     const data =
                         await getTimeSeries(
                             symbol, {
-
                                 interval: '1min',
-
-                                outputsize: 1500
+                                outputsize: requestedOutputsize
                             }
                         );
 
@@ -449,9 +482,19 @@ async function bootstrapLocalHistory(
                         );
 
 
+                    // IMPORTANT: incremental REST must EXTEND the existing
+                    // 1500-candle local history, never replace it with the
+                    // small 3-20 candle refresh window. REST wins on duplicate
+                    // datetimes, then any completed WS candle is merged on top.
+                    const restMerged =
+                        mergeCandleLists(
+                            existingHistory,
+                            prepared.closedCandles
+                        );
+
                     const local =
                         mergeCandleLists(
-                            prepared.closedCandles,
+                            restMerged,
                             wsClosed
                         );
 
@@ -933,7 +976,8 @@ const {
     getTimeSeries,
     getPrice,
     getMarketDataCacheStatus,
-    clearMarketDataCache
+    clearMarketDataCache,
+    getApiUsageStatus
 } = require('./marketData');
 
 
@@ -1109,19 +1153,11 @@ async function checkExpiredPaperSignals() {
             } else {
 
                 // ======================================
-                // REST FALLBACK
+                // SHARED REST SNAPSHOT FALLBACK
                 // ======================================
-
-                const data =
-                    await getPrice(
-                        signal.symbol
-                    );
-
-
-                currentPrice =
-                    Number(
-                        data.price
-                    );
+                // Result checks do not spend an extra /price credit.
+                const shared = getSharedRestPrice(signal.symbol);
+                currentPrice = Number(shared.price);
             }
 
 
@@ -2016,50 +2052,19 @@ async function runFastRestRecheck() {
             }
 
             try {
-                // v4.14.8 Smart REST Recheck + GUI state sync:
-                // - Do NOT force the 1500-candle time_series on every 30s tick.
-                // - Refresh 1M history only when its normal ~60s REST resync is due.
-                // - Between candle refreshes, request only the lightweight current price.
-                // This keeps the observer automatic while avoiding repeated full-history calls.
-                const historyDue = localHistoryNeedsBootstrap(symbol);
-                const closedCandles = historyDue
-                    ? await bootstrapLocalHistory(symbol, false)
-                    : getLocalHistory(symbol);
-
-                let livePrice = null;
-                let priceSource = 'LOCAL_LAST_CLOSE';
-
-                if (historyDue) {
-                    const restSnapshot = latestRestSnapshots.get(symbol) || null;
-                    if (restSnapshot && Number.isFinite(Number(restSnapshot.livePrice))) {
-                        livePrice = Number(restSnapshot.livePrice);
-                        priceSource = 'TIME_SERIES';
-                    }
-                }
-
-                // A price request is cheap compared with repeatedly downloading 1500 candles.
-                // getPrice() already has its own 15s cache, so accidental duplicate checks coalesce.
-                try {
-                    const priceData = await getPrice(symbol);
-                    const candidatePrice = Number(priceData && priceData.price);
-                    if (Number.isFinite(candidatePrice)) {
-                        livePrice = candidatePrice;
-                        priceSource = priceData && priceData._marketData && priceData._marketData.source
-                            ? `PRICE_${priceData._marketData.source}`
-                            : 'PRICE_API';
-                    }
-                } catch (priceError) {
-                    console.warn('[SMART REST PRICE]', symbol, '| fallback:', priceError.message);
-                }
-
-                if (!Number.isFinite(livePrice) && closedCandles.length) {
-                    livePrice = Number(closedCandles[0].close);
-                }
+                // v5.0 API Economy: Fast Recheck is analysis-only.
+                // It never calls Twelve Data directly. The shared REST updater
+                // owns refreshes and Fast Recheck reuses local history/price.
+                const closedCandles = getLocalHistory(symbol);
+                const sharedPrice = getSharedRestPrice(symbol);
+                const livePrice = Number(sharedPrice.price);
+                const priceSource = sharedPrice.source;
 
                 console.log(
                     '[SMART REST RECHECK]', symbol,
-                    '| history:', historyDue ? 'REFRESHED' : 'REUSED',
-                    '| price:', priceSource
+                    '| history: REUSED',
+                    '| price:', priceSource,
+                    '| age:', Number.isFinite(sharedPrice.ageMs) ? `${Math.round(sharedPrice.ageMs / 1000)}s` : 'N/A'
                 );
 
                 if (!Number.isFinite(livePrice) || closedCandles.length < 200) continue;
@@ -2324,6 +2329,81 @@ function armAutoScanFromRequest(req) {
 
 
 // ======================================================
+// v5.0.7 API ECONOMY V3 — SINGLE SHARED REST UPDATER
+// ======================================================
+// One owner of recurring time_series requests. Default 12s tick means
+// no more than ~5 scheduled refresh attempts/minute, leaving headroom
+// under the existing 7/min REST Credit Manager.
+const SHARED_REST_UPDATER_TICK_MS = Math.max(
+    10 * 1000,
+    Number(process.env.SHARED_REST_UPDATER_TICK_MS) || 12 * 1000
+);
+let sharedRestUpdaterRunning = false;
+let sharedRestUpdaterIndex = 0;
+let sharedRestUpdaterLast = null;
+
+function getSharedRestRefreshQueue() {
+    const period = getActiveMarketPeriod();
+    const queue = [];
+    const seen = new Set();
+
+    const add = symbol => {
+        const key = String(symbol || '').trim();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        queue.push(key);
+    };
+
+    for (const symbol of (period.activePairs || [])) add(symbol);
+    for (const symbol of fastRecheckWatchlist.keys()) add(symbol);
+    for (const symbol of getPendingSignalSymbols()) add(symbol);
+
+    return queue;
+}
+
+async function runSharedRestUpdater() {
+    if (!autoScanEnabled || sharedRestUpdaterRunning || scanInProgress) return;
+
+    const queue = getSharedRestRefreshQueue();
+    if (!queue.length) return;
+
+    sharedRestUpdaterIndex = sharedRestUpdaterIndex % queue.length;
+    const symbol = queue[sharedRestUpdaterIndex];
+    sharedRestUpdaterIndex = (sharedRestUpdaterIndex + 1) % queue.length;
+
+    if (!localHistoryNeedsBootstrap(symbol)) return;
+
+    sharedRestUpdaterRunning = true;
+    try {
+        const before = getLocalHistory(symbol).length;
+        await bootstrapLocalHistory(symbol, false);
+        const shared = getSharedRestPrice(symbol);
+        sharedRestUpdaterLast = {
+            symbol,
+            at: new Date().toISOString(),
+            mode: before < 100 ? 'BOOTSTRAP' : 'INCREMENTAL',
+            priceSource: shared.source
+        };
+        console.log(
+            '[SHARED REST UPDATER]', symbol,
+            '|', sharedRestUpdaterLast.mode,
+            '| next tick:', `${Math.round(SHARED_REST_UPDATER_TICK_MS / 1000)}s`
+        );
+    } catch (error) {
+        console.warn('[SHARED REST UPDATER ERROR]', symbol, error.message);
+    } finally {
+        sharedRestUpdaterRunning = false;
+    }
+}
+
+setInterval(() => {
+    runSharedRestUpdater().catch(error =>
+        console.warn('[SHARED REST UPDATER ERROR]', error.message)
+    );
+}, SHARED_REST_UPDATER_TICK_MS);
+
+
+// ======================================================
 // v5.0.3 — LIGHTWEIGHT CANDIDATE DISCOVERY
 // ======================================================
 // Full market scan stays on the 10-minute Auto Scan cadence.
@@ -2357,32 +2437,44 @@ let candidateDiscoveryLastStartedAt = null;
 let candidateDiscoveryLastCompletedAt = null;
 let candidateDiscoveryLastResults = [];
 const candidateDiscoveryPriorityAt = new Map();
+// Pair + latest closed 1M candle dedupe. Prevents Candidate Discovery from
+// re-running the same strict priority scan on unchanged market data.
+const candidateDiscoveryPriorityCandleKey = new Map();
+
+function getLatestClosed1mKey(symbol) {
+    const history = getLocalHistory(symbol);
+    if (!Array.isArray(history) || !history.length) return null;
+
+    const candle = history[0];
+    const parsed = candle && candle.datetime ? parseCandleUtc(candle.datetime) : null;
+    if (!parsed || !Number.isFinite(parsed.getTime())) {
+        return candle && candle.datetime ? String(candle.datetime) : null;
+    }
+
+    // Normalize to the minute so formatting differences cannot bypass dedupe.
+    return String(Math.floor(parsed.getTime() / 60000));
+}
 
 async function refreshDiscoveryHistory(symbol) {
-    const data = await getTimeSeries(symbol, {
-        interval: '1min',
-        outputsize: CANDIDATE_DISCOVERY_REFRESH_OUTPUTSIZE
-    });
-    if (data.status === 'error' || !Array.isArray(data.values)) {
-        throw new Error(data.message || 'No REST candle values');
-    }
-    const prepared = prepareCandles(data.values);
-    latestRestSnapshots.set(symbol, {
-        ...prepared,
-        marketData: data._marketData || null,
-        refreshedAt: Date.now()
-    });
-    const merged = mergeCandleLists(getLocalHistory(symbol), prepared.closedCandles);
-    localHistoricalCandles.set(symbol, merged.slice(0, LOCAL_HISTORY_LIMIT));
-    localHistoryBootstrappedAt.set(symbol, Date.now());
+    // v5.0 API Economy: Candidate Discovery is strictly local.
+    // It must never own REST requests; the shared updater refreshes history.
     return getLocalHistory(symbol);
 }
 
 function requestDiscoveryPriorityScan(symbol) {
     if (!symbol || priorityScanPending.has(symbol) || scanInProgress) return false;
+
+    const candleKey = getLatestClosed1mKey(symbol);
+    if (candleKey && candidateDiscoveryPriorityCandleKey.get(symbol) === candleKey) {
+        console.log('[CANDIDATE DISCOVERY] priority scan deduped', symbol, '| closed1m:', candleKey);
+        return false;
+    }
+
     const last = Number(candidateDiscoveryPriorityAt.get(symbol)) || 0;
     if ((Date.now() - last) < CANDIDATE_DISCOVERY_PRIORITY_COOLDOWN_MS) return false;
+
     candidateDiscoveryPriorityAt.set(symbol, Date.now());
+    if (candleKey) candidateDiscoveryPriorityCandleKey.set(symbol, candleKey);
     priorityScanPending.add(symbol);
     const params = new URLSearchParams({ minScore: '50', showWeak: '1', symbol, priority: '1', discovery: '1' });
     console.log('[CANDIDATE DISCOVERY] priority scan requested', symbol);
@@ -2488,7 +2580,16 @@ app.get('/api/auto-scan', (req, res) => {
         intervalMinutes: AUTO_SCAN_INTERVAL_MS / 60000,
         lastStartedAt: autoScanLastStartedAt,
         nextAt: autoScanNextAt,
-        scanInProgress
+        scanInProgress,
+        apiUsage: getApiUsageStatus(),
+        apiEconomy: {
+            sharedRestUpdater: true,
+            updaterTickMs: SHARED_REST_UPDATER_TICK_MS,
+            updaterRunning: sharedRestUpdaterRunning,
+            lastRefresh: sharedRestUpdaterLast,
+            candidateDiscoveryUsesRest: false,
+            fastRecheckUsesRest: false
+        }
     });
 });
 
@@ -3076,9 +3177,8 @@ app.get(
 
 
                 if (
-                    localHistoryNeedsBootstrap(
-                        symbol
-                    )
+                    !Array.isArray(closedCandles) ||
+                    closedCandles.length < 100
                 ) {
 
                     try {
@@ -4299,6 +4399,62 @@ app.get(
                             expirationExpired
                         };
                         recordStage(earlyPayload);
+
+                        // v5 research: track high-confidence WAIT setups separately
+                        // from real TRADE statistics. Strict rule: score must be > 60.
+                        // We only persist the WAIT once an expiration exists, because
+                        // without a horizon there is no meaningful WIN/LOSS outcome.
+                        if (
+                            Number(score) > 60 &&
+                            Number.isFinite(Number(recommendedExpiration)) &&
+                            Number(recommendedExpiration) > 0 &&
+                            Number.isFinite(Number(livePrice))
+                        ) {
+                            try {
+                                const waitResearchRecord = logSignal({
+                                    setupId: lifecycleWatch && lifecycleWatch.setupId,
+                                    symbol,
+                                    signal,
+                                    score,
+                                    upScore: Number(analysis.upScore) || 0,
+                                    downScore: Number(analysis.downScore) || 0,
+                                    multiTimeframe: analysis.multiTimeframe || null,
+                                    primaryStrategy: primaryStrategy || null,
+                                    pairSession: pairSession || null,
+                                    marketRegime: analysis.marketRegime || null,
+                                    price: livePrice,
+                                    referencePrice: analysis.referencePrice || livePrice,
+                                    expiration,
+                                    expirationMinutes: recommendedExpiration,
+                                    expirationAt,
+                                    expirationAtMs,
+                                    signalCandleCloseMs,
+                                    signalAge,
+                                    signalStrength,
+                                    candleConfirmation: analysis.candleConfirmation || null,
+                                    decision: 'WAIT',
+                                    entryZone,
+                                    entryQuality: entryZone.currentEntryQuality || null,
+                                    entryScore: entryZone.currentEntryScore || null,
+                                    marketBias: analysis.marketBias || (analysis.signalDiagnostics && analysis.signalDiagnostics.marketBias) || null,
+                                    signalStage: analysis.signalStage || (analysis.signalDiagnostics && analysis.signalDiagnostics.signalStage) || null,
+                                    diagnostics: analysis.signalDiagnostics || null
+                                });
+
+                                if (waitResearchRecord) {
+                                    console.log(
+                                        '[WAIT RESEARCH LOGGER]',
+                                        symbol,
+                                        signal,
+                                        '| Score:', score,
+                                        '| Expiration:', recommendedExpiration + 'm',
+                                        '| setupId:', waitResearchRecord.setupId
+                                    );
+                                }
+                            } catch (waitLoggerError) {
+                                console.error('[WAIT RESEARCH LOGGER ERROR]', symbol, waitLoggerError.message);
+                            }
+                        }
 
                         const earlyEntry = String(entryZone.currentEntryQuality || entryZone.status || '').toUpperCase();
                         const earlyStrength = Number(signalStrength.score) || 0;
@@ -6175,6 +6331,8 @@ app.get(
 
             marketCache: getMarketDataCacheStatus(),
 
+            apiUsage: getApiUsageStatus(),
+
             realtime: getRealtimeStatus(),
 
             montrealTime: getTimeInZone(
@@ -6579,7 +6737,59 @@ app.post(
 );
 
 
-// ======================================================\n// v5.0 PAPER OUTCOME ENGINE\n//\n// Samples pending signal prices once per minute. Requests pass through the\n// existing REST Credit Manager, and Fast Recheck prices are reused above.\n// This keeps 3/5/10/15m outcomes plus sampled MFE/MAE persistent on disk.\n// ======================================================\n\nconst OUTCOME_SAMPLE_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.OUTCOME_SAMPLE_INTERVAL_MS) || 60 * 1000);\nlet outcomeSamplerRunning = false;\n\nasync function samplePendingSignalOutcomes() {\n    if (outcomeSamplerRunning || scanInProgress) return;\n    const symbols = getPendingSignalSymbols();\n    if (!symbols.length) return;\n    outcomeSamplerRunning = true;\n    try {\n        console.log('[OUTCOME ENGINE] sampling | pending symbols:', symbols.length);\n        for (const symbol of symbols) {\n            try {\n                const live = getLivePrice(symbol);\n                let price = live && live.fresh ? Number(live.price) : NaN;\n                let source = 'LOCAL/REALTIME';\n                if (!Number.isFinite(price)) {\n                    const data = await getPrice(symbol);\n                    price = Number(data && data.price);\n                    source = 'REST_PRICE';\n                }\n                if (Number.isFinite(price)) {\n                    const outcomeCandles = getLocalHistory(symbol);\n                    observePendingSignals(symbol, price, Date.now(), { candles: outcomeCandles });\n                    console.log('[OUTCOME SAMPLE]', symbol, '| price:', price, '| source:', source);\n                }\n            } catch (error) {\n                console.warn('[OUTCOME SAMPLE ERROR]', symbol, error.message);\n            }\n        }\n    } finally {\n        outcomeSamplerRunning = false;\n    }\n}\n\nsetInterval(() => samplePendingSignalOutcomes().catch(error => console.error('[OUTCOME ENGINE]', error.message)), OUTCOME_SAMPLE_INTERVAL_MS);\n\n// ======================================================
+// ======================================================
+// v5.0 PAPER OUTCOME ENGINE — API ECONOMY
+// ======================================================
+// Samples pending signals from the shared REST snapshot/local history.
+// This loop performs ZERO direct Twelve Data requests.
+const OUTCOME_SAMPLE_INTERVAL_MS = Math.max(
+    60 * 1000,
+    Number(process.env.OUTCOME_SAMPLE_INTERVAL_MS) || 60 * 1000
+);
+let outcomeSamplerRunning = false;
+
+async function samplePendingSignalOutcomes() {
+    if (outcomeSamplerRunning || scanInProgress) return;
+    const symbols = getPendingSignalSymbols();
+    if (!symbols.length) return;
+
+    outcomeSamplerRunning = true;
+    try {
+        console.log('[OUTCOME ENGINE] sampling | pending symbols:', symbols.length);
+
+        for (const symbol of symbols) {
+            try {
+                const live = getLivePrice(symbol);
+                let price = live && live.fresh ? Number(live.price) : NaN;
+                let source = 'REALTIME';
+
+                if (!Number.isFinite(price)) {
+                    const shared = getSharedRestPrice(symbol);
+                    price = Number(shared.price);
+                    source = shared.source;
+                }
+
+                if (!Number.isFinite(price)) continue;
+
+                const outcomeCandles = getLocalHistory(symbol);
+                observePendingSignals(symbol, price, Date.now(), { candles: outcomeCandles });
+                console.log('[OUTCOME SAMPLE]', symbol, '| price:', price, '| source:', source);
+            } catch (error) {
+                console.warn('[OUTCOME SAMPLE ERROR]', symbol, error.message);
+            }
+        }
+    } finally {
+        outcomeSamplerRunning = false;
+    }
+}
+
+setInterval(() => {
+    samplePendingSignalOutcomes().catch(error =>
+        console.error('[OUTCOME ENGINE]', error.message)
+    );
+}, OUTCOME_SAMPLE_INTERVAL_MS);
+
+// ======================================================
 // SIGNAL CHECKER
 // ======================================================
 //

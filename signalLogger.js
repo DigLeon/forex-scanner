@@ -13,7 +13,7 @@ const HISTORY_FILE =
 
 
 // v4.17 Outcome Engine: fixed research checkpoints used for comparable statistics.
-const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15];
+const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15, 30];
 const OUTCOME_FLAT_BPS = Math.max(0, Number(process.env.OUTCOME_FLAT_BPS) || 0.5);
 
 function classifyOutcome(direction, startPrice, price) {
@@ -379,31 +379,36 @@ function hasRecentDuplicate(
     result
 ) {
 
-    // Do not create overlapping paper trades for the same pair and
-    // direction. A new signal can be logged once the previous one is
-    // resolved. This keeps paper statistics from being inflated by
-    // repeated scans of the same still-active setup.
+    // Keep TRADE and WAIT research samples independent. A high-score WAIT
+    // must never block a later real TRADE for the same pair/direction.
+    const resultDecision = String(result.decision || result.action || 'TRADE').toUpperCase();
+    const resultSetupId = result.setupId ? String(result.setupId) : null;
+
     return history.some(
         item => {
 
-            if (
-                item.symbol !==
-                result.symbol
-            ) {
+            if (item.symbol !== result.symbol) {
                 return false;
             }
 
-
-            if (
-                item.signal !==
-                result.signal
-            ) {
+            if (item.signal !== result.signal) {
                 return false;
             }
 
+            const itemDecision = String(item.decision || 'TRADE').toUpperCase();
+            if (itemDecision !== resultDecision) {
+                return false;
+            }
 
-            return item.status ===
-                'PENDING';
+            // If lifecycle setupId is available, log only one research record
+            // per setup + decision, even after its first horizon resolves.
+            if (resultSetupId && item.setupId && String(item.setupId) === resultSetupId) {
+                return true;
+            }
+
+            // Fallback for older/no-setupId records: only prevent overlapping
+            // pending samples of the same decision type.
+            return item.status === 'PENDING';
         }
     );
 }
@@ -1107,203 +1112,108 @@ function getSignalHistory(
 // STATISTICS
 // ======================================================
 
-function getSignalStats() {
-
-    const history =
-        loadHistory();
-
-
-    const completed =
-        history.filter(
-            item =>
-            item.status ===
-            'COMPLETED'
-        );
-
-
-    const wins =
-        completed.filter(
-            item =>
-            item.result ===
-            'WIN'
-        )
-        .length;
-
-
-    const losses =
-        completed.filter(
-            item =>
-            item.result ===
-            'LOSS'
-        )
-        .length;
-
-
-    const draws =
-        completed.filter(
-            item =>
-            item.result ===
-            'FLAT'
-        )
-        .length;
-
-
-    const decided =
-        wins +
-        losses;
-
-
-    const pending =
-        history.filter(
-            item =>
-            item.status ===
-            'PENDING'
-        )
-        .length;
-
-
-    // ==================================================
-    // DATA FRESHNESS STATS
-    // ==================================================
-
-    const freshness = {};
-
-
-    completed.forEach(
-        item => {
-
-            const key =
-                item.dataAgeStatus ||
-                'UNKNOWN';
-
-
-            if (!freshness[key]) {
-                freshness[key] = {
-                    total: 0,
-                    wins: 0,
-                    losses: 0,
-                    draws: 0,
-                    winRate: 0
-                };
-            }
-
-
-            freshness[key]
-                .total++;
-
-
-            if (
-                item.result ===
-                'WIN'
-            ) {
-                freshness[key]
-                    .wins++;
-            } else if (
-                item.result ===
-                'LOSS'
-            ) {
-                freshness[key]
-                    .losses++;
-            } else if (
-                item.result ===
-                'FLAT'
-            ) {
-                freshness[key]
-                    .draws++;
-            }
-        }
-    );
-
-
-    Object.keys(
-            freshness
-        )
-        .forEach(
-            key => {
-
-                const group =
-                    freshness[key];
-
-
-                const groupDecided =
-                    group.wins +
-                    group.losses;
-
-
-                group.winRate =
-                    groupDecided ?
-                    Number(
-                        (
-                            group.wins /
-                            groupDecided *
-                            100
-                        )
-                        .toFixed(
-                            1
-                        )
-                    ) :
-                    0;
-            }
-        );
-
+function summarizeSignalSubset(records) {
+    const completed = records.filter(item => item.status === 'COMPLETED');
+    const wins = completed.filter(item => item.result === 'WIN').length;
+    const losses = completed.filter(item => item.result === 'LOSS').length;
+    const draws = completed.filter(item => item.result === 'FLAT').length;
+    const decided = wins + losses;
+    const pending = records.filter(item => item.status === 'PENDING').length;
 
     const horizonStats = {};
-    for (const item of history) {
+    for (const item of records) {
         const rr = item.researchResults || {};
         for (const [key, value] of Object.entries(rr)) {
             if (!value || !value.outcome) continue;
-            if (!horizonStats[key]) horizonStats[key] = { total: 0, wins: 0, losses: 0, flat: 0, winRate: 0 };
-            const h = horizonStats[key]; h.total++;
+            if (!horizonStats[key]) {
+                horizonStats[key] = { total: 0, wins: 0, losses: 0, flat: 0, winRate: 0 };
+            }
+            const h = horizonStats[key];
+            h.total++;
             if (value.outcome === 'WIN') h.wins++;
             else if (value.outcome === 'LOSS') h.losses++;
             else if (value.outcome === 'FLAT') h.flat++;
         }
     }
     Object.values(horizonStats).forEach(h => {
-        const decided = h.wins + h.losses;
-        h.winRate = decided ? Number((h.wins / decided * 100).toFixed(1)) : 0;
+        const horizonDecided = h.wins + h.losses;
+        h.winRate = horizonDecided ? Number((h.wins / horizonDecided * 100).toFixed(1)) : 0;
     });
 
-    const tracked = history.filter(x => x.outcomeTracking && Number(x.outcomeTracking.samples) > 0);
-    const avgMfeBps = tracked.length ? Number((tracked.reduce((a,x)=>a+Number(x.outcomeTracking.mfeBps||0),0)/tracked.length).toFixed(2)) : 0;
-    const avgMaeBps = tracked.length ? Number((tracked.reduce((a,x)=>a+Number(x.outcomeTracking.maeBps||0),0)/tracked.length).toFixed(2)) : 0;
+    const tracked = records.filter(x => x.outcomeTracking && Number(x.outcomeTracking.samples) > 0);
+    const avgMfeBps = tracked.length
+        ? Number((tracked.reduce((a, x) => a + Number(x.outcomeTracking.mfeBps || 0), 0) / tracked.length).toFixed(2))
+        : 0;
+    const avgMaeBps = tracked.length
+        ? Number((tracked.reduce((a, x) => a + Number(x.outcomeTracking.maeBps || 0), 0) / tracked.length).toFixed(2))
+        : 0;
 
     return {
-
-        total: history.length,
-
-
+        total: records.length,
         completed: completed.length,
-
-
         pending,
-
-
         wins,
-
-
         losses,
-
-
         draws,
-
-
-        winRate: decided ?
-            Number(
-                (
-                    wins /
-                    decided *
-                    100
-                )
-                .toFixed(
-                    1
-                )
-            ) : 0,
-
+        winRate: decided ? Number((wins / decided * 100).toFixed(1)) : 0,
         horizonStats,
-        outcomeTracking: { tracked: tracked.length, avgMfeBps, avgMaeBps, flatThresholdBps: OUTCOME_FLAT_BPS },
+        outcomeTracking: {
+            tracked: tracked.length,
+            avgMfeBps,
+            avgMaeBps,
+            flatThresholdBps: OUTCOME_FLAT_BPS
+        }
+    };
+}
 
-        freshness
+function getSignalStats() {
+
+    const history = loadHistory();
+
+    // Existing dashboard semantics remain TRADE-only. WAIT research is exposed
+    // separately so it cannot contaminate the real trade win-rate sample.
+    const trades = history.filter(item =>
+        String(item.decision || 'TRADE').toUpperCase() === 'TRADE'
+    );
+
+    const waitAbove60 = history.filter(item =>
+        String(item.decision || '').toUpperCase() === 'WAIT' &&
+        Number(item.score) > 60
+    );
+
+    const tradeStats = summarizeSignalSubset(trades);
+    const waitStats = summarizeSignalSubset(waitAbove60);
+
+    // Keep freshness compatible with the previous TRADE statistics response.
+    const freshness = {};
+    trades.filter(item => item.status === 'COMPLETED').forEach(item => {
+        const key = item.dataAgeStatus || 'UNKNOWN';
+        if (!freshness[key]) {
+            freshness[key] = { total: 0, wins: 0, losses: 0, draws: 0, winRate: 0 };
+        }
+        const group = freshness[key];
+        group.total++;
+        if (item.result === 'WIN') group.wins++;
+        else if (item.result === 'LOSS') group.losses++;
+        else if (item.result === 'FLAT') group.draws++;
+    });
+    Object.values(freshness).forEach(group => {
+        const decided = group.wins + group.losses;
+        group.winRate = decided ? Number((group.wins / decided * 100).toFixed(1)) : 0;
+    });
+
+    return {
+        // Legacy fields stay TRADE-only.
+        ...tradeStats,
+        freshness,
+
+        // Explicit split for v5 research.
+        trade: tradeStats,
+        waitAbove60: {
+            thresholdRule: 'score > 60',
+            ...waitStats
+        },
+        allLoggedRecords: history.length
     };
 }
 

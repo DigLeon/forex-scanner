@@ -20,6 +20,15 @@ const TELEGRAM_CHAT_IDS =
 const sentSignalKeys = new Set();
 const sentEarlyKeys = new Set();
 
+const TELEGRAM_MIN_SCORE_EXCLUSIVE = Number.isFinite(Number(process.env.TELEGRAM_MIN_SCORE_EXCLUSIVE))
+    ? Math.max(0, Number(process.env.TELEGRAM_MIN_SCORE_EXCLUSIVE))
+    : 60;
+
+function passesTelegramScore(signal) {
+    const score = Number(signal?.score);
+    return Number.isFinite(score) && score > TELEGRAM_MIN_SCORE_EXCLUSIVE;
+}
+
 function isTelegramConfigured() {
     return Boolean(TELEGRAM_ALERTS && TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_IDS.length > 0);
 }
@@ -218,6 +227,7 @@ function buildEarlyMessage(signal) {
 async function sendEarlyAlert(signal) {
     if (!isTelegramConfigured()) return {sent:false, reason:'TELEGRAM_DISABLED_OR_NOT_CONFIGURED'};
     if (!signal || signal.stage !== 'GET_READY') return {sent:false, reason:'NOT_GET_READY'};
+    if (!passesTelegramScore(signal)) return {sent:false, reason:'SCORE_NOT_ABOVE_TELEGRAM_MINIMUM', score:Number(signal?.score) || 0, minimumExclusive:TELEGRAM_MIN_SCORE_EXCLUSIVE};
     if (!hasConcreteExpiration(signal)) return {sent:false, reason:'EXPIRATION_NOT_READY'};
     const key = [signal.symbol, signal.signal, signal.entryZone?.fvgId || 'NO_FVG'].join('|');
     if (sentEarlyKeys.has(key)) return {sent:false, reason:'DUPLICATE_EARLY', key};
@@ -233,6 +243,10 @@ async function sendTradeAlert(signal) {
 
     if (!signal || signal.decision !== 'TRADE') {
         return { sent:false, reason:'NOT_A_TRADE' };
+    }
+
+    if (!passesTelegramScore(signal)) {
+        return { sent:false, reason:'SCORE_NOT_ABOVE_TELEGRAM_MINIMUM', score:Number(signal?.score) || 0, minimumExclusive:TELEGRAM_MIN_SCORE_EXCLUSIVE };
     }
 
     if (!hasConcreteExpiration(signal)) {

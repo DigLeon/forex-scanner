@@ -7,6 +7,12 @@ const {
     API_KEY
 } = require('./config');
 
+const {
+    assertRestAllowed,
+    recordApiRequest,
+    getApiUsageStatus
+} = require('./apiUsageTracker');
+
 
 
 function requireApiKey() {
@@ -324,7 +330,9 @@ async function requestJson(
 
             // Count only real outbound HTTP attempts. Cached/coalesced reads
             // never reach this point and therefore consume no manager credit.
+            assertRestAllowed();
             await acquireTwelveRestCredit();
+            recordApiRequest('REST');
 
             const response =
                 await fetch(
@@ -896,5 +904,6 @@ module.exports = {
     getPrice,
     getMarketDataCacheStatus,
     clearMarketDataCache,
-    getRestCreditManagerStatus
+    getRestCreditManagerStatus,
+    getApiUsageStatus
 };
