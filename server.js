@@ -1221,6 +1221,34 @@ function parseCandleUtc(
     return date;
 }
 
+function buildExpirationSnapshot(analysis, newestClosedCandleDatetime) {
+    const expiration = analysis && analysis.expiration ? analysis.expiration : null;
+    const rawMinutes = expiration && expiration.recommendedMinutes !== undefined && expiration.recommendedMinutes !== null
+        ? expiration.recommendedMinutes
+        : (analysis && analysis.recommendedExpiration !== undefined && analysis.recommendedExpiration !== null
+            ? analysis.recommendedExpiration
+            : null);
+    const expirationMinutes = Number(rawMinutes);
+    const openTime = parseCandleUtc(newestClosedCandleDatetime);
+    const signalCandleCloseMs = openTime ? openTime.getTime() + 60 * 1000 : null;
+    const expirationAtMs = Number.isFinite(expirationMinutes) && Number.isFinite(signalCandleCloseMs)
+        ? signalCandleCloseMs + expirationMinutes * 60 * 1000
+        : null;
+    const expirationAt = Number.isFinite(expirationAtMs) ? new Date(expirationAtMs).toISOString() : null;
+    const expirationRemainingSeconds = Number.isFinite(expirationAtMs)
+        ? Math.max(0, Math.floor((expirationAtMs - Date.now()) / 1000))
+        : null;
+    return {
+        expiration,
+        expirationMinutes: Number.isFinite(expirationMinutes) ? expirationMinutes : null,
+        expirationAt,
+        expirationAtMs,
+        expirationRemainingSeconds,
+        expirationExpired: Number.isFinite(expirationAtMs) ? expirationAtMs <= Date.now() : false,
+        expirationGenerated: Boolean(Number.isFinite(expirationMinutes) && expirationAt)
+    };
+}
+
 
 // ======================================================
 // PREPARE REST 1M CANDLES
@@ -1865,6 +1893,14 @@ const FAST_RECHECK_READY_TIMEOUT_MS = Math.max(
     60 * 1000,
     Number(process.env.FAST_RECHECK_READY_TIMEOUT_MS) || 3 * 60 * 1000
 );
+// v5.0.1: GET READY is intentionally an early paper-analysis alert.
+// Allow a small score gap while all structural/entry/strength gates remain strong.
+// Final TRADE still requires the full requiredScore and all strict gates.
+const getReadyToleranceEnv = Number(process.env.GET_READY_SCORE_TOLERANCE);
+const GET_READY_SCORE_TOLERANCE = Math.max(
+    0,
+    Math.min(5, Number.isFinite(getReadyToleranceEnv) ? getReadyToleranceEnv : 2)
+);
 const priorityScanPending = new Set();
 
 function createSetupId(symbol, signal, createdAtMs = Date.now()) {
@@ -1910,16 +1946,19 @@ function addFastRecheckWatch(symbol, signal, userMinScore, scoreWeights) {
         checks: existing ? existing.checks : 0,
         last: existing ? existing.last : null,
         getReadyAt: existing ? existing.getReadyAt : null,
+        expirationTelegramSentAt: existing ? existing.expirationTelegramSentAt : null,
         readyAt: existing ? existing.readyAt : null,
         priorityScanRequestedAt: existing ? existing.priorityScanRequestedAt : null
     });
-    return fastRecheckWatchlist.get(symbol);
 
     console.log(
         '[FAST RECHECK WATCH]', symbol, signal,
+        '| setupId:', setupId,
         '| watched:', fastRecheckWatchlist.size,
         '| interval:', `${Math.round(FAST_RECHECK_INTERVAL_MS / 1000)}s`
     );
+
+    return fastRecheckWatchlist.get(symbol);
 }
 
 function fastRecheckSnapshot() {
@@ -2040,6 +2079,7 @@ async function runFastRestRecheck() {
                 const diagnostics = analysis && analysis.signalDiagnostics ? analysis.signalDiagnostics : {};
                 const score = Number(diagnostics.bestDirectionScore ?? analysis.bestDirectionScore ?? 0);
                 const requiredScore = Number(diagnostics.requiredScore ?? diagnostics.effectiveMinScore ?? 0);
+                const expirationSnapshot = buildExpirationSnapshot(analysis, closedCandles.length ? closedCandles[0].datetime : null);
 
                 const entryStatus = String(entryZone.status || '').toUpperCase();
                 const entryQuality = String(entryZone.currentEntryQuality || '').toUpperCase();
@@ -2101,6 +2141,12 @@ async function runFastRestRecheck() {
                         candleConfirmation: cc || null,
                         signalDiagnostics: diagnostics || null,
                         strategyName: analysis.strategyName || analysis.strategy || null,
+                        expiration: expirationSnapshot.expiration,
+                        expirationMinutes: expirationSnapshot.expirationMinutes,
+                        expirationAt: expirationSnapshot.expirationAt,
+                        expirationAtMs: expirationSnapshot.expirationAtMs,
+                        expirationRemainingSeconds: expirationSnapshot.expirationRemainingSeconds,
+                        expirationExpired: expirationSnapshot.expirationExpired,
                         referencePrice: analysis.referencePrice || livePrice,
                         watchPrice: analysis.watchPrice !== undefined ? analysis.watchPrice : null,
                         historicalEffectiveness: estimateAccuracy({
@@ -2146,24 +2192,40 @@ async function runFastRestRecheck() {
                     signalStrength: strength,
                     candleConfirmation: cc,
                     signalDiagnostics: diagnostics,
-                    strategyName: analysis.strategyName || analysis.strategy || null
+                    strategyName: analysis.strategyName || analysis.strategy || null,
+                    expiration: expirationSnapshot.expiration,
+                    expirationMinutes: expirationSnapshot.expirationMinutes,
+                    expirationAt: expirationSnapshot.expirationAt,
+                    expirationAtMs: expirationSnapshot.expirationAtMs,
+                    expirationRemainingSeconds: expirationSnapshot.expirationRemainingSeconds,
+                    expirationExpired: expirationSnapshot.expirationExpired
                 };
                 recordStage(perfPayload);
 
                 const frEntry = String(entryZone.currentEntryQuality || entryZone.status || '').toUpperCase();
                 const frStrength = Number(strength.score) || 0;
-                const frGetReady = state === 'WAIT' && score >= requiredScore &&
+                const frGetReadyScoreFloor = Math.max(candidateWatchFloor, requiredScore - GET_READY_SCORE_TOLERANCE);
+                const frGetReady = state === 'WAIT' && score >= frGetReadyScoreFloor &&
                     Number(diagnostics.actualEdge || 0) >= Number(diagnostics.requiredEdge || 0) &&
                     diagnostics.contextSetupConflict !== true && frStrength >= 45 &&
                     !frEntry.includes('BAD') && !frEntry.includes('WORST') && !frEntry.includes('DO NOT ENTER') &&
                     !String(entryZone.status || '').toUpperCase().includes('TOO LATE');
-                if (frGetReady && !watch.getReadyAt) {
-                    watch.getReadyAt = Date.now();
-                    const gr = { ...perfPayload, stage: 'GET_READY' };
-                    recordStage(gr);
-                    sendEarlyAlert(gr)
-                        .then(r => console.log(r.sent ? '[TELEGRAM EARLY SENT]' : '[TELEGRAM EARLY SKIP]', symbol, '|', r.reason || 'GET_READY'))
-                        .catch(e => console.error('[TELEGRAM EARLY ERROR]', symbol, e.message));
+                if (frGetReady) {
+                    if (!watch.getReadyAt) {
+                        watch.getReadyAt = Date.now();
+                        recordStage({ ...perfPayload, stage: 'GET_READY' });
+                    }
+                    if (expirationSnapshot.expirationGenerated && !expirationSnapshot.expirationExpired && !watch.expirationTelegramSentAt) {
+                        const gr = { ...perfPayload, stage: 'GET_READY' };
+                        sendEarlyAlert(gr)
+                            .then(r => {
+                                if (r.sent) watch.expirationTelegramSentAt = Date.now();
+                                console.log(r.sent ? '[TELEGRAM EXPIRATION SENT]' : '[TELEGRAM EXPIRATION SKIP]', symbol, '|', r.reason || 'GET_READY');
+                            })
+                            .catch(e => console.error('[TELEGRAM EXPIRATION ERROR]', symbol, e.message));
+                    } else if (!expirationSnapshot.expirationGenerated) {
+                        console.log('[TELEGRAM EXPIRATION WAIT]', symbol, '| expiration not generated yet');
+                    }
                 }
 
                 // v5.0: READY is a transition, not a terminal state. Keep observing and
@@ -2259,6 +2321,164 @@ function armAutoScanFromRequest(req) {
     autoScanEnabled = true;
     scheduleAutoScan();
 }
+
+
+// ======================================================
+// v5.0.3 — LIGHTWEIGHT CANDIDATE DISCOVERY
+// ======================================================
+// Full market scan stays on the 10-minute Auto Scan cadence.
+// Between full scans, refresh a small session-ranked universe every 2 minutes,
+// run only the existing adaptive prefilter, and request a strict single-pair
+// priority scan for promising NEW candidates. This does not create TRADE,
+// GET_READY, WAIT, or GUI signals by itself; the normal full decision pipeline
+// remains authoritative.
+const CANDIDATE_DISCOVERY_INTERVAL_MS = Math.max(
+    2 * 60 * 1000,
+    Number(process.env.CANDIDATE_DISCOVERY_INTERVAL_MS) || 2 * 60 * 1000
+);
+const CANDIDATE_DISCOVERY_REFRESH_OUTPUTSIZE = Math.max(
+    120,
+    Math.min(300, Number(process.env.CANDIDATE_DISCOVERY_REFRESH_OUTPUTSIZE) || 180)
+);
+const CANDIDATE_DISCOVERY_PREFILTER_MIN = Math.max(
+    28,
+    Math.min(100, Number(process.env.CANDIDATE_DISCOVERY_PREFILTER_MIN) || 45)
+);
+const CANDIDATE_DISCOVERY_PAIR_LIMIT = Math.max(
+    1,
+    Math.min(5, Number(process.env.CANDIDATE_DISCOVERY_PAIR_LIMIT) || 5)
+);
+const CANDIDATE_DISCOVERY_PRIORITY_COOLDOWN_MS = Math.max(
+    2 * 60 * 1000,
+    Number(process.env.CANDIDATE_DISCOVERY_PRIORITY_COOLDOWN_MS) || 5 * 60 * 1000
+);
+let candidateDiscoveryRunning = false;
+let candidateDiscoveryLastStartedAt = null;
+let candidateDiscoveryLastCompletedAt = null;
+let candidateDiscoveryLastResults = [];
+const candidateDiscoveryPriorityAt = new Map();
+
+async function refreshDiscoveryHistory(symbol) {
+    const data = await getTimeSeries(symbol, {
+        interval: '1min',
+        outputsize: CANDIDATE_DISCOVERY_REFRESH_OUTPUTSIZE
+    });
+    if (data.status === 'error' || !Array.isArray(data.values)) {
+        throw new Error(data.message || 'No REST candle values');
+    }
+    const prepared = prepareCandles(data.values);
+    latestRestSnapshots.set(symbol, {
+        ...prepared,
+        marketData: data._marketData || null,
+        refreshedAt: Date.now()
+    });
+    const merged = mergeCandleLists(getLocalHistory(symbol), prepared.closedCandles);
+    localHistoricalCandles.set(symbol, merged.slice(0, LOCAL_HISTORY_LIMIT));
+    localHistoryBootstrappedAt.set(symbol, Date.now());
+    return getLocalHistory(symbol);
+}
+
+function requestDiscoveryPriorityScan(symbol) {
+    if (!symbol || priorityScanPending.has(symbol) || scanInProgress) return false;
+    const last = Number(candidateDiscoveryPriorityAt.get(symbol)) || 0;
+    if ((Date.now() - last) < CANDIDATE_DISCOVERY_PRIORITY_COOLDOWN_MS) return false;
+    candidateDiscoveryPriorityAt.set(symbol, Date.now());
+    priorityScanPending.add(symbol);
+    const params = new URLSearchParams({ minScore: '50', showWeak: '1', symbol, priority: '1', discovery: '1' });
+    console.log('[CANDIDATE DISCOVERY] priority scan requested', symbol);
+    const http = require('http');
+    const request = http.get(`http://127.0.0.1:${PORT}/api/scan?${params.toString()}`, response => {
+        response.resume();
+        response.on('end', () => {
+            priorityScanPending.delete(symbol);
+            console.log('[CANDIDATE DISCOVERY] priority scan completed', symbol, '| status:', response.statusCode);
+        });
+    });
+    request.on('error', error => {
+        priorityScanPending.delete(symbol);
+        console.warn('[CANDIDATE DISCOVERY ERROR]', symbol, error.message);
+    });
+    request.setTimeout(90 * 1000, () => request.destroy(new Error('Candidate discovery priority scan timeout')));
+    return true;
+}
+
+async function runCandidateDiscovery() {
+    if (!autoScanEnabled || candidateDiscoveryRunning || scanInProgress || fastRecheckRunning) return;
+    candidateDiscoveryRunning = true;
+    candidateDiscoveryLastStartedAt = new Date().toISOString();
+    const rows = [];
+    try {
+        const period = getActiveMarketPeriod();
+        if (period.key === 'ROLLOVER') return;
+        const ranked = getRankedSessionPairs(period.key, CANDIDATE_DISCOVERY_PAIR_LIMIT);
+        const maxSessionScore = Math.max(1, ...ranked.map(item => Number(item.sessionScore) || 0));
+        console.log('[CANDIDATE DISCOVERY] starting | pairs:', ranked.map(x => x.symbol).join(', '));
+        for (const item of ranked) {
+            if (scanInProgress) break;
+            try {
+                const history = await refreshDiscoveryHistory(item.symbol);
+                if (!Array.isArray(history) || history.length < 120) continue;
+                scanFvgBirths(item.symbol, history);
+                const prefilter = evaluateAdaptivePrefilter({
+                    symbol: item.symbol,
+                    oneMinuteCandles: history,
+                    sessionScore: item.sessionScore,
+                    maxSessionScore
+                });
+                const row = {
+                    symbol: item.symbol,
+                    prefilterScore: Number(prefilter.prefilterScore) || 0,
+                    priorityScore: Number(prefilter.priorityScore) || 0,
+                    opportunityBonus: Number(prefilter.opportunityBonus) || 0,
+                    priorityRequested: false
+                };
+                const alreadyWatched = fastRecheckWatchlist.has(item.symbol);
+                row.alreadyWatched = alreadyWatched;
+                rows.push(row);
+                console.log('[CANDIDATE DISCOVERY]', item.symbol,
+                    '| prefilter:', row.prefilterScore,
+                    '| priority:', row.priorityScore,
+                    '| watched:', alreadyWatched);
+            } catch (error) {
+                rows.push({ symbol: item.symbol, error: error.message });
+                console.warn('[CANDIDATE DISCOVERY ERROR]', item.symbol, error.message);
+            }
+        }
+
+        // Request at most ONE strict priority scan per discovery cycle.
+        // This avoids overlapping internal scans and keeps REST usage predictable.
+        const bestNewCandidate = rows
+            .filter(row => !row.error && !row.alreadyWatched && row.priorityScore >= CANDIDATE_DISCOVERY_PREFILTER_MIN)
+            .sort((a, b) => b.priorityScore - a.priorityScore)[0];
+        if (bestNewCandidate && !scanInProgress) {
+            bestNewCandidate.priorityRequested = requestDiscoveryPriorityScan(bestNewCandidate.symbol);
+        }
+    } finally {
+        candidateDiscoveryLastResults = rows;
+        candidateDiscoveryLastCompletedAt = new Date().toISOString();
+        candidateDiscoveryRunning = false;
+    }
+}
+
+setInterval(() => {
+    runCandidateDiscovery().catch(error => console.warn('[CANDIDATE DISCOVERY ERROR]', error.message));
+}, CANDIDATE_DISCOVERY_INTERVAL_MS);
+
+app.get('/api/candidate-discovery', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        status: 'ok',
+        enabled: autoScanEnabled,
+        running: candidateDiscoveryRunning,
+        intervalMs: CANDIDATE_DISCOVERY_INTERVAL_MS,
+        intervalMinutes: CANDIDATE_DISCOVERY_INTERVAL_MS / 60000,
+        prefilterMin: CANDIDATE_DISCOVERY_PREFILTER_MIN,
+        pairLimit: CANDIDATE_DISCOVERY_PAIR_LIMIT,
+        lastStartedAt: candidateDiscoveryLastStartedAt,
+        lastCompletedAt: candidateDiscoveryLastCompletedAt,
+        results: candidateDiscoveryLastResults
+    });
+});
 
 app.get('/api/auto-scan', (req, res) => {
     res.json({
@@ -3509,18 +3729,37 @@ app.get(
                             null;
 
 
+                    // v5.0.2 Current Decision Isolation:
+                    // An early OPPORTUNITY is a current-scan observation only when
+                    // its own freshly calculated watch zone is still actionable.
+                    // Historical/late zones remain in Zone History but must not
+                    // become a current OPPORTUNITY decision.
+                    const opportunityZoneForGate =
+                        opportunityWatch && opportunityWatch.entryZone &&
+                        typeof opportunityWatch.entryZone === 'object'
+                            ? opportunityWatch.entryZone
+                            : null;
+                    const opportunityZoneStatus = String(
+                        opportunityZoneForGate?.status || ''
+                    ).toUpperCase();
+                    const opportunityEntryQuality = String(
+                        opportunityZoneForGate?.currentEntryQuality || ''
+                    ).toUpperCase();
+                    const opportunityZoneActionable = Boolean(
+                        opportunityZoneForGate &&
+                        opportunityZoneForGate.available === true &&
+                        opportunityZoneStatus !== 'TOO LATE' &&
+                        !opportunityEntryQuality.includes('WORST') &&
+                        !opportunityEntryQuality.includes('DO NOT ENTER')
+                    );
+
                     const isEntryOpportunity =
                         Boolean(
                             opportunityWatch &&
-                            opportunityWatch.active ===
-                                true &&
-                            weakScore >=
-                                Number(
-                                    opportunityWatch.floor ||
-                                    30
-                                ) &&
-                            weakScore <
-                                weakSetupMinScore
+                            opportunityWatch.active === true &&
+                            opportunityZoneActionable &&
+                            weakScore >= Number(opportunityWatch.floor || 30) &&
+                            weakScore < weakSetupMinScore
                         );
 
 
@@ -3738,70 +3977,19 @@ app.get(
                     }
 
 
-                    if (
-                        showZoneLifecycle
-                    ) {
+                    if (showZoneLifecycle) {
+                        // v5.0.2: historical zone lifecycle is diagnostics/history,
+                        // never a current Scan Decision. This prevents one symbol
+                        // from becoming both ZONE WATCH and SKIP in the same scan.
                         console.log(
-                            '[SCAN ZONE]',
+                            '[ZONE OBSERVATION]',
                             symbol,
                             zoneLifecycle.direction,
-                            '| State:',
-                            zoneLifecycle.state,
-                            '| Score:',
-                            zoneLifecycle.score,
-                            '| Best:',
-                            zoneLifecycle.bestEntryPrice
+                            '| State:', zoneLifecycle.state,
+                            '| Score:', zoneLifecycle.score,
+                            '| Best:', zoneLifecycle.bestEntryPrice,
+                            '| current decision: NO SIGNAL'
                         );
-
-
-                        decisions.push({
-                            symbol,
-                            action:
-                                'ZONE WATCH',
-                            decision:
-                                'ZONE WATCH',
-                            reasonCode:
-                                'ENTRY_ZONE_LIFECYCLE',
-                            reason:
-                                zoneLifecycle.reason,
-                            signal:
-                                zoneLifecycle.direction,
-                            score:
-                                zoneLifecycle.score,
-                            requiredScore:
-                                zoneLifecycle.requiredScore,
-                            actualEdge:
-                                weakEdge,
-                            requiredEdge:
-                                weakRequiredEdge,
-                            entryStatus:
-                                zoneLifecycle.state,
-                            entryQuality:
-                                zoneLifecycle.zoneStatus ||
-                                zoneLifecycle.state,
-                            bestEntryPrice:
-                                zoneLifecycle.bestEntryPrice,
-                            lastAcceptablePrice:
-                                zoneLifecycle.lastAcceptablePrice,
-                            worstEntryPrice:
-                                zoneLifecycle.worstEntryPrice,
-                            currentPrice:
-                                zoneLifecycle.currentPrice,
-                            strength:
-                                'ZONE LIFECYCLE',
-                            expirationMinutes:
-                                null,
-                            expirationAt:
-                                null,
-                            candidateOnly:
-                                false,
-                            opportunityOnly:
-                                false,
-                            preOpportunityOnly:
-                                false,
-                            zoneWatchOnly:
-                                true
-                        });
                     }
 
 
@@ -4102,15 +4290,24 @@ app.get(
                             signalStrength,
                             candleConfirmation: analysis.candleConfirmation || null,
                             signalDiagnostics: analysis.signalDiagnostics || null,
-                            strategyName: primaryStrategy?.name || analysis.strategyName || analysis.strategy || null
+                            strategyName: primaryStrategy?.name || analysis.strategyName || analysis.strategy || null,
+                            expiration,
+                            expirationMinutes: Number.isFinite(recommendedExpiration) ? recommendedExpiration : null,
+                            expirationAt,
+                            expirationAtMs,
+                            expirationRemainingSeconds,
+                            expirationExpired
                         };
                         recordStage(earlyPayload);
 
                         const earlyEntry = String(entryZone.currentEntryQuality || entryZone.status || '').toUpperCase();
                         const earlyStrength = Number(signalStrength.score) || 0;
                         const earlyDiag = analysis.signalDiagnostics || {};
+                        const earlyRequiredScore = Number(earlyDiag.requiredScore ?? earlyDiag.effectiveMinScore ?? 0);
+                        const earlyCandidateFloor = Number(earlyDiag.candidateWatchFloor ?? 35);
+                        const earlyGetReadyScoreFloor = Math.max(earlyCandidateFloor, earlyRequiredScore - GET_READY_SCORE_TOLERANCE);
                         const isGetReady =
-                            Number(score) >= Number(earlyDiag.requiredScore ?? earlyDiag.effectiveMinScore ?? 0) &&
+                            Number(score) >= earlyGetReadyScoreFloor &&
                             Number(earlyDiag.actualEdge || 0) >= Number(earlyDiag.requiredEdge || 0) &&
                             earlyDiag.contextSetupConflict !== true &&
                             earlyStrength >= 45 &&
@@ -4120,11 +4317,27 @@ app.get(
                             !String(entryZone.status || '').toUpperCase().includes('TOO LATE');
 
                         if (isGetReady) {
-                            const getReadyPayload = { ...earlyPayload, stage: 'GET_READY' };
-                            recordStage(getReadyPayload);
-                            sendEarlyAlert(getReadyPayload)
-                                .then(r => console.log(r.sent ? '[TELEGRAM EARLY SENT]' : '[TELEGRAM EARLY SKIP]', symbol, '|', r.reason || 'GET_READY'))
-                                .catch(e => console.error('[TELEGRAM EARLY ERROR]', symbol, e.message));
+                            const firstGetReady = lifecycleWatch && !lifecycleWatch.getReadyAt;
+                            if (firstGetReady) lifecycleWatch.getReadyAt = Date.now();
+                            const getReadyPayload = {
+                                ...earlyPayload,
+                                stage: 'GET_READY',
+                                getReadyScoreFloor: earlyGetReadyScoreFloor,
+                                scoreTolerance: GET_READY_SCORE_TOLERANCE
+                            };
+                            if (firstGetReady || !lifecycleWatch) recordStage(getReadyPayload);
+
+                            const expirationGenerated = Number.isFinite(Number(recommendedExpiration)) && Boolean(expirationAt);
+                            if (expirationGenerated && !expirationExpired && (!lifecycleWatch || !lifecycleWatch.expirationTelegramSentAt)) {
+                                sendEarlyAlert(getReadyPayload)
+                                    .then(r => {
+                                        if (r.sent && lifecycleWatch) lifecycleWatch.expirationTelegramSentAt = Date.now();
+                                        console.log(r.sent ? '[TELEGRAM EXPIRATION SENT]' : '[TELEGRAM EXPIRATION SKIP]', symbol, '|', r.reason || 'GET_READY');
+                                    })
+                                    .catch(e => console.error('[TELEGRAM EXPIRATION ERROR]', symbol, e.message));
+                            } else if (!expirationGenerated) {
+                                console.log('[TELEGRAM EXPIRATION WAIT]', symbol, '| expiration not generated yet');
+                            }
                         }
                     } else {
                         scanStats.skips++;
@@ -5249,7 +5462,17 @@ app.get(
         );
 
 
-        const decisionSummary = decisions.reduce((acc, item) => {
+        // v5.0.1: one pair must contribute exactly one current scan decision.
+        // ZONE WATCH / lifecycle observations can be emitted before the final SKIP/WAIT,
+        // so collapse duplicates by symbol and keep the last (authoritative) decision.
+        const finalDecisionMap = new Map();
+        for (const item of decisions) {
+            const key = String(item?.symbol || '').toUpperCase();
+            if (!key) continue;
+            finalDecisionMap.set(key, item);
+        }
+        const finalDecisions = Array.from(finalDecisionMap.values());
+        const decisionSummary = finalDecisions.reduce((acc, item) => {
             const key = String(item?.action || item?.decision || 'UNKNOWN').toUpperCase();
             acc[key] = (acc[key] || 0) + 1;
             return acc;
@@ -5413,7 +5636,7 @@ app.get(
 
             results: results,
 
-            decisions: decisions,
+            decisions: finalDecisions,
 
             scanStats: scanStats
         });

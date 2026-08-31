@@ -1,7 +1,7 @@
 {
   "name": "market-data-twelve-data",
-  "version": "5.0.0",
-  "description": "Forex Scanner v5.0.0 Signal Lifecycle \u2014 persistent candidate/ready monitoring, priority confirmation, setup identity and timestamp-aware paper outcomes.",
+  "version": "5.0.5",
+  "description": "Forex Scanner v5.0.0 Signal Lifecycle — persistent candidate/ready monitoring, priority confirmation, setup identity and timestamp-aware paper outcomes.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

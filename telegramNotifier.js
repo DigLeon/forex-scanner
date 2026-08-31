@@ -37,7 +37,7 @@ function formatMontrealTime(value) {
     if (!value) return '-';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '-';
-    return date.toLocaleTimeString('en-CA', {
+    return date.toLocaleTimeString('ru-RU', {
         timeZone: 'America/Toronto',
         hour: '2-digit',
         minute: '2-digit',
@@ -54,25 +54,33 @@ function formatNumber(value) {
     return n.toFixed(6);
 }
 
+function hasConcreteExpiration(signal) {
+    const minutes = Number(signal?.expirationMinutes ?? signal?.expiration?.recommendedMinutes);
+    const at = signal?.expirationAt;
+    if (!Number.isFinite(minutes) || minutes <= 0 || !at) return false;
+    const atMs = new Date(at).getTime();
+    return Number.isFinite(atMs) && atMs > Date.now();
+}
+
 function buildTradeMessage(signal) {
     const entryZone = signal?.entryZone && typeof signal.entryZone === 'object' ? signal.entryZone : {};
     const strategy = signal?.primaryStrategy?.name || signal?.strategyName || signal?.strategy || '-';
     const icon = signal?.signal === 'UP' ? '⬆️' : signal?.signal === 'DOWN' ? '⬇️' : '➡️';
 
     return [
-        `📈 ${signal?.symbol || 'UNKNOWN'} — ${signal?.signal || 'NO SIGNAL'} ${icon}`,
+        `📈 ${signal?.symbol || 'НЕИЗВЕСТНО'} — ${signal?.signal === 'UP' ? 'ВВЕРХ' : signal?.signal === 'DOWN' ? 'ВНИЗ' : 'НЕТ СИГНАЛА'} ${icon}`,
         '',
-        '✅ TRADE',
+        '✅ СИГНАЛ ПОДТВЕРЖДЁН',
         '',
-        `Score: ${Number(signal?.score) || 0}`,
-        `Entry: ${formatNumber(signal?.currentPrice)}`,
-        `Entry quality: ${entryZone.currentEntryQuality || signal?.entryQuality || '-'}`,
-        `Best entry: ${formatNumber(entryZone.bestEntryPrice)}`,
-        `Do not chase: ${formatNumber(entryZone.worstEntryPrice)}`,
+        `Оценка: ${Number(signal?.score) || 0}`,
+        `Текущая цена: ${formatNumber(signal?.currentPrice)}`,
+        `Качество входа: ${entryZone.currentEntryQuality || signal?.entryQuality || '-'}`,
+        `Лучший вход: ${formatNumber(entryZone.bestEntryPrice)}`,
+        `Не входить после: ${formatNumber(entryZone.worstEntryPrice)}`,
         '',
-        `Strategy: ${strategy}`,
-        `Expiration: ${formatMontrealTime(signal?.expirationAt)} Montreal`,
-        `Decision: ${signal?.decision || 'TRADE'}`
+        `Стратегия: ${strategy}`,
+        `Экспирация: ${formatMontrealTime(signal?.expirationAt)} (Монреаль)`,
+        `Решение: ${signal?.decision === 'TRADE' ? 'ПОДТВЕРЖДЁН' : (signal?.decision || 'ПОДТВЕРЖДЁН')}`
     ].join('\n');
 }
 
@@ -194,21 +202,23 @@ function buildEarlyMessage(signal) {
     const cc = signal?.candleConfirmation || {};
     const icon = signal?.signal === 'UP' ? '⬆️' : '⬇️';
     return [
-        `🔔 PAPER GET READY — ${signal?.symbol || 'UNKNOWN'} ${signal?.signal || ''} ${icon}`,
-        `Score: ${Number(signal?.score) || 0}/${Number(signal?.requiredScore) || '-'}`,
-        `Strength: ${Number(ss.score) || 0} (${ss.recommendation || ss.level || '-'})`,
-        `Entry: ${ez.status || ez.currentEntryQuality || '-'}`,
-        `Price: ${formatNumber(signal?.currentPrice)}`,
-        `Best entry: ${formatNumber(ez.bestEntryPrice)}`,
-        `Candle: ${cc.confirmed ? 'CONFIRMED' : 'WAITING'}`,
+        `🔔 PAPER — ПРИГОТОВИТЬСЯ — ${signal?.symbol || 'НЕИЗВЕСТНО'} ${signal?.signal === 'UP' ? 'ВВЕРХ' : signal?.signal === 'DOWN' ? 'ВНИЗ' : ''} ${icon}`,
+        `Оценка: ${Number(signal?.score) || 0}/${Number(signal?.requiredScore) || '-'}`,
+        `Сила сигнала: ${Number(ss.score) || 0} (${ss.recommendation || ss.level || '-'})`,
+        `Вход: ${ez.status || ez.currentEntryQuality || '-'}`,
+        `Цена: ${formatNumber(signal?.currentPrice)}`,
+        `Лучший вход: ${formatNumber(ez.bestEntryPrice)}`,
+        `Свечное подтверждение: ${cc.confirmed ? 'ПОДТВЕРЖДЕНО' : 'ОЖИДАНИЕ'}`,
+        `Экспирация: ${formatMontrealTime(signal?.expirationAt)} (Монреаль)`,
         '',
-        'Early paper-analysis alert — final confirmation may still be pending.'
+        'PAPER-уведомление отправлено после расчёта времени экспирации.'
     ].join('\n');
 }
 
 async function sendEarlyAlert(signal) {
     if (!isTelegramConfigured()) return {sent:false, reason:'TELEGRAM_DISABLED_OR_NOT_CONFIGURED'};
     if (!signal || signal.stage !== 'GET_READY') return {sent:false, reason:'NOT_GET_READY'};
+    if (!hasConcreteExpiration(signal)) return {sent:false, reason:'EXPIRATION_NOT_READY'};
     const key = [signal.symbol, signal.signal, signal.entryZone?.fvgId || 'NO_FVG'].join('|');
     if (sentEarlyKeys.has(key)) return {sent:false, reason:'DUPLICATE_EARLY', key};
     const response = await sendTelegramMessage(buildEarlyMessage(signal));
@@ -223,6 +233,10 @@ async function sendTradeAlert(signal) {
 
     if (!signal || signal.decision !== 'TRADE') {
         return { sent:false, reason:'NOT_A_TRADE' };
+    }
+
+    if (!hasConcreteExpiration(signal)) {
+        return { sent:false, reason:'EXPIRATION_NOT_READY' };
     }
 
     const key = buildSignalKey(signal);
@@ -258,12 +272,12 @@ async function sendTestAlert() {
     const now = new Date();
 
     return sendTelegramMessage([
-        '🧪 Forex Scanner Telegram Test',
+        '🧪 Тест Telegram — Forex Scanner',
         '',
-        'Connection: OK',
-        `Server time: ${formatMontrealTime(now.toISOString())} Montreal`,
+        'Соединение: OK',
+        `Время сервера: ${formatMontrealTime(now.toISOString())} (Монреаль)`,
         '',
-        'Telegram alerts are ready.'
+        'Telegram-уведомления работают.'
     ].join('\n'));
 }
 
