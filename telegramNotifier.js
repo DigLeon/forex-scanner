@@ -2,23 +2,23 @@ const https = require('https');
 
 const TELEGRAM_ALERTS = String(process.env.TELEGRAM_ALERTS || '').toLowerCase() === 'true';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
-const TELEGRAM_CHAT_IDS =
-    String(
-        process.env.TELEGRAM_CHAT_IDS ||
-        process.env.TELEGRAM_CHAT_ID ||
-        ''
+const TELEGRAM_CHAT_IDS = [
+    ...new Set(
+        String(
+            process.env.TELEGRAM_CHAT_IDS ||
+            process.env.TELEGRAM_CHAT_ID ||
+            ''
+        )
+        .split(',')
+        .map(id => id.trim())
+        .filter(Boolean)
     )
-    .split(',')
-    .map(
-        id =>
-            id.trim()
-    )
-    .filter(
-        Boolean
-    );
+];
 
 const sentSignalKeys = new Set();
 const sentEarlyKeys = new Set();
+const pendingSignalKeys = new Set();
+const pendingEarlyKeys = new Set();
 
 const TELEGRAM_MIN_SCORE_EXCLUSIVE = Number.isFinite(Number(process.env.TELEGRAM_MIN_SCORE_EXCLUSIVE))
     ? Math.max(0, Number(process.env.TELEGRAM_MIN_SCORE_EXCLUSIVE))
@@ -39,6 +39,32 @@ function buildSignalKey(signal) {
         signal?.signal || 'UNKNOWN',
         signal?.candleId || 'NO_CANDLE',
         signal?.analysisId || 'NO_ANALYSIS'
+    ].join('|');
+}
+
+
+function buildEarlySignalKey(signal) {
+    const setupId = String(signal?.setupId || '').trim();
+    if (setupId) return `SETUP:${setupId}|GET_READY`;
+
+    const fvgId = String(signal?.entryZone?.fvgId || signal?.fvgId || '').trim();
+    if (fvgId) {
+        return [
+            signal?.symbol || 'UNKNOWN',
+            signal?.signal || 'UNKNOWN',
+            `FVG:${fvgId}`,
+            'GET_READY'
+        ].join('|');
+    }
+
+    // Final fallback: one PREPARE message per symbol/direction/expiration slot.
+    // This avoids duplicate alerts when two pipelines reach Telegram at the same time
+    // even if a legacy payload has no setupId/FVG id.
+    return [
+        signal?.symbol || 'UNKNOWN',
+        signal?.signal || 'UNKNOWN',
+        signal?.expirationAt || 'NO_EXPIRATION',
+        'GET_READY'
     ].join('|');
 }
 
@@ -229,11 +255,24 @@ async function sendEarlyAlert(signal) {
     if (!signal || signal.stage !== 'GET_READY') return {sent:false, reason:'NOT_GET_READY'};
     if (!passesTelegramScore(signal)) return {sent:false, reason:'SCORE_NOT_ABOVE_TELEGRAM_MINIMUM', score:Number(signal?.score) || 0, minimumExclusive:TELEGRAM_MIN_SCORE_EXCLUSIVE};
     if (!hasConcreteExpiration(signal)) return {sent:false, reason:'EXPIRATION_NOT_READY'};
-    const key = [signal.symbol, signal.signal, signal.entryZone?.fvgId || 'NO_FVG'].join('|');
-    if (sentEarlyKeys.has(key)) return {sent:false, reason:'DUPLICATE_EARLY', key};
-    const response = await sendTelegramMessage(buildEarlyMessage(signal));
-    sentEarlyKeys.add(key);
-    return {sent:true,key,sentCount:response.sentCount,failedCount:response.failedCount,deliveries:response.deliveries};
+
+    const key = buildEarlySignalKey(signal);
+
+    // IMPORTANT: reserve the key BEFORE awaiting Telegram. Full Scan and Fast Recheck
+    // can arrive here concurrently. The previous implementation added the key only
+    // after the network request finished, which allowed both calls to send the same alert.
+    if (sentEarlyKeys.has(key) || pendingEarlyKeys.has(key)) {
+        return {sent:false, reason:'DUPLICATE_EARLY', key};
+    }
+
+    pendingEarlyKeys.add(key);
+    try {
+        const response = await sendTelegramMessage(buildEarlyMessage(signal));
+        sentEarlyKeys.add(key);
+        return {sent:true,key,sentCount:response.sentCount,failedCount:response.failedCount,deliveries:response.deliveries};
+    } finally {
+        pendingEarlyKeys.delete(key);
+    }
 }
 
 async function sendTradeAlert(signal) {
@@ -255,27 +294,32 @@ async function sendTradeAlert(signal) {
 
     const key = buildSignalKey(signal);
 
-    if (sentSignalKeys.has(key)) {
+    if (sentSignalKeys.has(key) || pendingSignalKeys.has(key)) {
         return { sent:false, reason:'DUPLICATE_SIGNAL', key };
     }
 
-    const response =
-        await sendTelegramMessage(
-            buildTradeMessage(signal)
-        );
+    pendingSignalKeys.add(key);
+    try {
+        const response =
+            await sendTelegramMessage(
+                buildTradeMessage(signal)
+            );
 
-    sentSignalKeys.add(key);
+        sentSignalKeys.add(key);
 
-    return {
-        sent: true,
-        key,
-        sentCount:
-            response.sentCount,
-        failedCount:
-            response.failedCount,
-        deliveries:
-            response.deliveries
-    };
+        return {
+            sent: true,
+            key,
+            sentCount:
+                response.sentCount,
+            failedCount:
+                response.failedCount,
+            deliveries:
+                response.deliveries
+        };
+    } finally {
+        pendingSignalKeys.delete(key);
+    }
 }
 
 async function sendTestAlert() {
