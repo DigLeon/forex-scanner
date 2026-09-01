@@ -792,6 +792,34 @@ function getSessionPairScore(symbol, periodKey) {
     return score;
 }
 
+// ======================================================
+// HISTORICAL PAIR PRIORITY — v5.3.4 research ranking
+// ======================================================
+// Research-only bonus based on the completed historical sample.
+// It affects pair SELECTION order only. It NEVER changes Signal Score,
+// Entry Score, expiration, direction, or execution gates.
+const HISTORICAL_PAIR_PRIORITY_BONUS = Object.freeze({
+    'USD/JPY': 10,
+    'AUD/JPY': 7,
+    'AUD/CAD': 5,
+    'EUR/GBP': -5
+});
+
+function getHistoricalPairPriorityBonus(symbol) {
+    return Number(HISTORICAL_PAIR_PRIORITY_BONUS[String(symbol || '').toUpperCase()]) || 0;
+}
+
+function applyHistoricalPairPriority(row) {
+    const historicalPriorityBonus = getHistoricalPairPriorityBonus(row && row.symbol);
+    const marketPriorityScore = Number(row && row.priorityScore) || 0;
+    return {
+        ...row,
+        marketPriorityScore,
+        historicalPriorityBonus,
+        priorityScore: Math.round((marketPriorityScore + historicalPriorityBonus) * 10) / 10
+    };
+}
+
 function getRankedSessionPairs(periodKey, limit = 5) {
     if (periodKey === 'ROLLOVER') {
         return [];
@@ -2281,6 +2309,9 @@ app.get('/api/fast-recheck', (req, res) => {
 // and running the same analysis twice when the Scan button is clicked
 // repeatedly or two clients call /api/scan at the same time.
 let scanInProgress = false;
+const FULL_SCAN_PAIR_LIMIT = Math.max(1, Math.min(PAIRS.length, Number(process.env.FULL_SCAN_PAIR_LIMIT) || 10));
+const SESSION_PREFILTER_POOL_LIMIT = Math.max(FULL_SCAN_PAIR_LIMIT, Math.min(PAIRS.length, Number(process.env.SESSION_PREFILTER_POOL_LIMIT) || PAIRS.length));
+let latestScanSnapshot = null;
 
 // v5.3.2 — server-side Auto Scan starts automatically with the Node server.
 // No manual SCAN NOW click is required. The first scan is launched shortly
@@ -2473,7 +2504,7 @@ const CANDIDATE_DISCOVERY_PREFILTER_MIN = Math.max(
 );
 const CANDIDATE_DISCOVERY_PAIR_LIMIT = Math.max(
     1,
-    Math.min(5, Number(process.env.CANDIDATE_DISCOVERY_PAIR_LIMIT) || 5)
+    Math.min(10, Number(process.env.CANDIDATE_DISCOVERY_PAIR_LIMIT) || 10)
 );
 const CANDIDATE_DISCOVERY_PRIORITY_COOLDOWN_MS = Math.max(
     2 * 60 * 1000,
@@ -2580,13 +2611,13 @@ async function runCandidateDiscovery() {
                     sessionScore: item.sessionScore,
                     maxSessionScore
                 });
-                const row = {
+                const row = applyHistoricalPairPriority({
                     symbol: item.symbol,
                     prefilterScore: Number(prefilter.prefilterScore) || 0,
                     priorityScore: Number(prefilter.priorityScore) || 0,
                     opportunityBonus: Number(prefilter.opportunityBonus) || 0,
                     priorityRequested: false
-                };
+                });
                 const alreadyWatched = fastRecheckWatchlist.has(item.symbol);
                 row.alreadyWatched = alreadyWatched;
                 rows.push(row);
@@ -2654,6 +2685,14 @@ app.get('/api/auto-scan', (req, res) => {
             fastRecheckUsesRest: false
         }
     });
+});
+
+app.get('/api/latest-scan', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!latestScanSnapshot) {
+        return res.json({ status: 'ok', available: false });
+    }
+    res.json({ status: 'ok', available: true, scan: latestScanSnapshot });
 });
 
 app.get(
@@ -2787,7 +2826,7 @@ app.get(
         // ADAPTIVE SESSION PREFILTER — v4.14.4
         // ==============================================
         // 17 pairs -> session Top 8 -> lightweight local
-        // prefilter -> dynamic Top 5 -> existing scanner.
+        // prefilter -> dynamic Top 10 -> existing scanner.
         // The prefilter never creates a signal and cannot
         // bypass Score / Entry / Candle / TOO LATE gates.
         // ==============================================
@@ -2795,7 +2834,7 @@ app.get(
         const sessionTop8 =
             getRankedSessionPairs(
                 marketPeriod.key,
-                8
+                SESSION_PREFILTER_POOL_LIMIT
             );
 
         const prefilterRanking = [];
@@ -2824,7 +2863,7 @@ app.get(
                     // Prefilter uses LOCAL history only. If a pair has not
                     // been bootstrapped yet, it stays eligible through a
                     // lightweight session fallback. The normal full-analysis
-                    // loop bootstraps only the selected Top-5 pairs.
+                    // loop bootstraps only the selected Top-10 pairs.
                     const history =
                         getLocalHistory(
                             item.symbol
@@ -2922,6 +2961,12 @@ app.get(
             }
         }
 
+        // v5.3.4: historical performance is a SMALL ranking bonus only.
+        // Keep the raw market prefilter score intact; adjust only priorityScore.
+        for (let i = 0; i < prefilterRanking.length; i += 1) {
+            prefilterRanking[i] = applyHistoricalPairPriority(prefilterRanking[i]);
+        }
+
         const passedPrefilter =
             prefilterRanking
             .filter(
@@ -2933,7 +2978,7 @@ app.get(
                     Number(a.priorityScore)
             );
 
-        // If fewer than 5 pass 28, fill remaining slots
+        // If fewer than the configured full-scan limit pass 28, fill remaining slots
         // with the strongest successfully evaluated pairs.
         const fallbackPrefilter =
             prefilterRanking
@@ -2958,7 +3003,7 @@ app.get(
             selectedSymbols.add(row.symbol);
             selectedPrefilter.push(row);
 
-            if (selectedPrefilter.length >= 5) {
+            if (selectedPrefilter.length >= FULL_SCAN_PAIR_LIMIT) {
                 break;
             }
         }
@@ -2966,7 +3011,7 @@ app.get(
         const requestedPrioritySymbol = String(req.query.symbol || '').trim();
         const activePairs = requestedPrioritySymbol ? [requestedPrioritySymbol] : selectedPrefilter.map(item => item.symbol);
         if (!requestedPrioritySymbol) {
-            lastDynamicScanPairs = activePairs.slice(0, 5);
+            lastDynamicScanPairs = activePairs.slice(0, FULL_SCAN_PAIR_LIMIT);
         }
         if (requestedPrioritySymbol) console.log('[PRIORITY SCAN] strict full-pipeline single pair:', requestedPrioritySymbol);
 
@@ -3033,6 +3078,9 @@ app.get(
                     `${row.symbol}:${row.prefilterScore}` +
                     (row.opportunityBonus ?
                         `(+${row.opportunityBonus})` :
+                        '') +
+                    (row.historicalPriorityBonus ?
+                        `(H${row.historicalPriorityBonus > 0 ? '+' : ''}${row.historicalPriorityBonus})` :
                         '')
             )
             .join(', ') :
@@ -4596,12 +4644,12 @@ app.get(
                         };
                         recordStage(earlyPayload);
 
-                        // v5 research: track high-confidence WAIT setups separately
-                        // from real TRADE statistics. Strict rule: score must be > 60.
+                        // v5.3.3 research: track WAIT setups from score 50 separately
+                        // from real TRADE statistics. This is a PAPER/statistics stream only.
                         // We only persist the WAIT once an expiration exists, because
                         // without a horizon there is no meaningful WIN/LOSS outcome.
                         if (
-                            Number(score) > 60 &&
+                            Number(score) >= 50 &&
                             Number.isFinite(Number(recommendedExpiration)) &&
                             Number(recommendedExpiration) > 0 &&
                             Number.isFinite(Number(livePrice))
@@ -4624,6 +4672,7 @@ app.get(
                                     expirationMinutes: recommendedExpiration,
                                     expirationAt,
                                     expirationAtMs,
+                                    expirationGeneratedAtMs: Date.now(),
                                     signalCandleCloseMs,
                                     signalAge,
                                     signalStrength,
@@ -5870,7 +5919,7 @@ app.get(
         // RESPONSE
         // ==============================================
 
-        res.json({
+        const scanResponsePayload = {
 
             status: 'ok',
 
@@ -5924,7 +5973,7 @@ app.get(
                     0,
 
                 selectionMode:
-                    'ADAPTIVE_SESSION_PREFILTER_TOP8_TO_TOP5',
+                    'ADAPTIVE_SESSION_PREFILTER_TO_TOP10',
 
                 prefilterMinimum: 28,
 
@@ -5991,7 +6040,15 @@ app.get(
             decisions: finalDecisions,
 
             scanStats: scanStats
-        });
+        };
+
+        // Publish only the latest FULL market scan to the GUI snapshot.
+        // Single-pair Candidate Discovery priority scans must not replace the
+        // 10-pair dashboard with a one-row snapshot.
+        if (!requestedPrioritySymbol) {
+            latestScanSnapshot = scanResponsePayload;
+        }
+        res.json(scanResponsePayload);
 
         } finally {
             scanInProgress = false;

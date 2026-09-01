@@ -95,13 +95,16 @@ function getSignalPerformanceStatistics(limit = 10000) {
     const trades = history.filter(item =>
         String(item.decision || 'TRADE').toUpperCase() === 'TRADE'
     );
+    const waitAtOrAbove50 = history.filter(item =>
+        String(item.decision || '').toUpperCase() === 'WAIT' && Number(item.score) >= 50
+    );
     const waitAbove60 = history.filter(item =>
         String(item.decision || '').toUpperCase() === 'WAIT' && Number(item.score) > 60
     );
 
     const completed = trades.filter(item => normalizeOutcome(item.result));
-    const waitCompleted = waitAbove60.filter(item => normalizeOutcome(item.result));
-    const waitPending = waitAbove60.filter(item =>
+    const waitCompleted = waitAtOrAbove50.filter(item => normalizeOutcome(item.result));
+    const waitPending = waitAtOrAbove50.filter(item =>
         String(item.status || '').toUpperCase() === 'PENDING'
     ).length;
     const pending = trades.filter(item =>
@@ -137,11 +140,11 @@ function getSignalPerformanceStatistics(limit = 10000) {
                 : 'UNKNOWN'
         ),
         byResearchHorizon: buildHorizonStats(trades),
-        waitAbove60: {
-            thresholdRule: 'score > 60',
+        waitAtOrAbove50: {
+            thresholdRule: 'score >= 50',
             ...summarize(waitCompleted),
             pending: waitPending,
-            loggedWaits: waitAbove60.length,
+            loggedWaits: waitAtOrAbove50.length,
             byPair: group(waitCompleted, item => item.symbol || item.pair),
             byScore: group(waitCompleted, item => scoreBand(item.score)),
             byConfirmation: group(waitCompleted, confirmationType),
@@ -151,6 +154,12 @@ function getSignalPerformanceStatistics(limit = 10000) {
                     ? `${Number(item.expirationMinutes)}m`
                     : 'UNKNOWN'
             ),
+            byResearchHorizon: buildHorizonStats(waitAtOrAbove50)
+        },
+        waitAbove60: {
+            thresholdRule: 'score > 60',
+            ...summarize(waitAbove60.filter(item => normalizeOutcome(item.result))),
+            loggedWaits: waitAbove60.length,
             byResearchHorizon: buildHorizonStats(waitAbove60)
         }
     };

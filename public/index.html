@@ -1500,6 +1500,7 @@
         let lastScanStats = {};
 
         let lastScannedPairCount = 0;
+        let lastAppliedAutoScanGeneratedAt = null;
 
         let fastRecheckUiTimer = null;
         let fastRecheckUiBusy = false;
@@ -1770,6 +1771,8 @@
                     )
                     .filter(
                         item =>
+                            item.action ===
+                                "CANDIDATE" ||
                             item.action ===
                                 "OPPORTUNITY" ||
                             item.action ===
@@ -5937,9 +5940,46 @@
 
 
         scannerStatus.textContent =
-            "Ready | REST mode | press SCAN NOW once to start 10-minute Auto Scan";
+            "Ready | Auto Scan starts with the server | waiting for first automatic scan";
         refreshPerformanceStats();
         setInterval(refreshPerformanceStats, 30000);
+
+        async function refreshLatestAutoScanResults() {
+            try {
+                const response = await fetch('/api/latest-scan', {cache:'no-store'});
+                const payload = await response.json();
+                if (!payload || !payload.available || !payload.scan) return;
+
+                const data = payload.scan;
+                const generatedAt = String(data.generatedAt || '');
+                if (!generatedAt || generatedAt === lastAppliedAutoScanGeneratedAt) return;
+
+                // Do not overwrite a manual scan while its request is still running.
+                if (scannerButton && scannerButton.disabled) return;
+
+                let results = Array.isArray(data.results) ? data.results : [];
+                results = results.filter(result => result && (result.signal === 'UP' || result.signal === 'DOWN'));
+
+                lastRawResults = results;
+                lastRawDecisions = Array.isArray(data.decisions)
+                    ? data.decisions
+                    : (Array.isArray(data.scanDecisions) ? data.scanDecisions : []);
+                lastScanStats = safeObject(data.scanStats);
+
+                const period = safeObject(data.marketPeriod);
+                lastScannedPairCount = Array.isArray(period.activePairs)
+                    ? period.activePairs.length
+                    : lastRawDecisions.length;
+
+                renderMarketPeriod(period);
+                applyDisplayPreferences();
+                lastAppliedAutoScanGeneratedAt = generatedAt;
+
+                scannerStatus.textContent =
+                    `Auto Scan updated | ${data.montrealTime || generatedAt} | ` +
+                    `${lastScannedPairCount} pairs | ${lastRawDecisions.length} visible decisions`;
+            } catch (_) {}
+        }
 
         async function refreshAutoScanStatus() {
             try {
@@ -5953,6 +5993,8 @@
         }
         refreshAutoScanStatus();
         setInterval(refreshAutoScanStatus, 15000);
+        refreshLatestAutoScanResults();
+        setInterval(refreshLatestAutoScanResults, 5000);
     </script>
 
 </body>

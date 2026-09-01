@@ -52,7 +52,7 @@ const PAIRS = Object.freeze([
 // ======================================================
 
 const DEFAULT_PAIR_SETTINGS = {
-    minSignalScore: 52,
+    minSignalScore: 50,
     minEdge: 8,
     retestAtrTolerance: 0.23,
     breakoutAtrBuffer: 0.07
@@ -79,7 +79,7 @@ function getPairSettings(
             symbol
         )
     ) {
-        settings.minSignalScore = 54;
+        settings.minSignalScore = 50;
         settings.minEdge = 8;
         settings.retestAtrTolerance = 0.22;
         settings.breakoutAtrBuffer = 0.06;
@@ -90,7 +90,7 @@ function getPairSettings(
         typeof symbol === 'string' &&
         symbol.toUpperCase().startsWith('GBP/')
     ) {
-        settings.minSignalScore = 55;
+        settings.minSignalScore = 50;
         settings.minEdge = 9;
         settings.retestAtrTolerance = 0.25;
         settings.breakoutAtrBuffer = 0.08;

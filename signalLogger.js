@@ -13,7 +13,8 @@ const HISTORY_FILE =
 
 
 // v4.17 Outcome Engine: fixed research checkpoints used for comparable statistics.
-const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15, 30];
+const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15, 20, 30];
+const WAIT_RESEARCH_MIN_SCORE = 50;
 const OUTCOME_FLAT_BPS = Math.max(0, Number(process.env.OUTCOME_FLAT_BPS) || 0.5);
 
 function classifyOutcome(direction, startPrice, price) {
@@ -497,6 +498,15 @@ function logSignal(
             );
 
 
+    const suppliedExpirationGeneratedAtMs = Number(result.expirationGeneratedAtMs);
+    const suppliedExpirationGeneratedAt = result.expirationGeneratedAt
+        ? Date.parse(result.expirationGeneratedAt)
+        : NaN;
+    const expirationGeneratedAtMs = Number.isFinite(suppliedExpirationGeneratedAtMs)
+        ? suppliedExpirationGeneratedAtMs
+        : (Number.isFinite(suppliedExpirationGeneratedAt) ? suppliedExpirationGeneratedAt : now);
+    const priceAfter20MinutesTargetAtMs = expirationGeneratedAtMs + 20 * 60 * 1000;
+
     const layers =
         result.multiTimeframe &&
         result.multiTimeframe.layers ?
@@ -767,6 +777,21 @@ function logSignal(
 
         expiryAtMs: expiryAtMs,
 
+        // ==================================================
+        // EXPIRATION-GENERATION RESEARCH CLOCK
+        // Dedicated 20-minute price checkpoint measured from
+        // the moment the expiration time was generated.
+        // This is tracked for WAIT and TRADE records alike.
+        // ==================================================
+        expirationGeneratedAt: new Date(expirationGeneratedAtMs).toISOString(),
+        expirationGeneratedAtMs: expirationGeneratedAtMs,
+        priceAfter20MinutesTargetAt: new Date(priceAfter20MinutesTargetAtMs).toISOString(),
+        priceAfter20MinutesTargetAtMs: priceAfter20MinutesTargetAtMs,
+        priceAfter20Minutes: null,
+        priceAfter20MinutesObservedAt: null,
+        priceAfter20MinutesStatus: 'PENDING',
+        priceAfter20MinutesApproximate: null,
+        priceAfter20MinutesSource: null,
 
         // ==================================================
         // STATUS
@@ -890,9 +915,34 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
     const updated = [];
 
     for (const record of history) {
-        if (record.status !== 'PENDING' || record.symbol !== symbol) continue;
+        if (record.symbol !== symbol) continue;
+
         const start = Number(record.entryPrice);
         if (!Number.isFinite(start) || start <= 0) continue;
+
+        // Dedicated research checkpoint: capture the market price exactly
+        // 20 minutes after the expiration timestamp was GENERATED, even if
+        // the record was WAIT and even if its main expiration already ended.
+        if (String(record.priceAfter20MinutesStatus || '').toUpperCase() === 'PENDING') {
+            const target20Ms = Number(record.priceAfter20MinutesTargetAtMs);
+            if (Number.isFinite(target20Ms) && atMs >= target20Ms) {
+                const exact20 = historicalCloseAtOrBefore(options.candles, target20Ms);
+                const observed20Price = exact20 ? exact20.price : price;
+                const observed20AtMs = exact20 ? exact20.closeMs : atMs;
+                record.priceAfter20Minutes = observed20Price;
+                record.priceAfter20MinutesObservedAt = new Date(observed20AtMs).toISOString();
+                record.priceAfter20MinutesStatus = 'COMPLETED';
+                record.priceAfter20MinutesApproximate = !exact20;
+                record.priceAfter20MinutesSource = exact20
+                    ? 'CLOSED_1M_AT_OR_BEFORE_TARGET'
+                    : 'LIVE_SAMPLE';
+                changed = true;
+                updated.push(record);
+                console.log('[PRICE +20M]', record.symbol, record.signal, '| decision:', record.decision, '| price:', observed20Price);
+            }
+        }
+
+        if (record.status !== 'PENDING') continue;
 
         if (!record.outcomeTracking || typeof record.outcomeTracking !== 'object') {
             record.outcomeTracking = { samples: 0, lastObservedAt: null, lastObservedPrice: null, mfePrice: null, maePrice: null, mfeBps: 0, maeBps: 0, samplingApproximate: true };
@@ -940,7 +990,7 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
 }
 
 function getPendingSignalSymbols() {
-    return Array.from(new Set(loadHistory().filter(x => x.status === 'PENDING' && x.symbol).map(x => x.symbol)));
+    return Array.from(new Set(loadHistory().filter(x => x.symbol && (x.status === 'PENDING' || String(x.priceAfter20MinutesStatus || '').toUpperCase() === 'PENDING')).map(x => x.symbol)));
 }
 
 // ======================================================
@@ -1176,13 +1226,18 @@ function getSignalStats() {
         String(item.decision || 'TRADE').toUpperCase() === 'TRADE'
     );
 
+    const waitAtOrAbove50 = history.filter(item =>
+        String(item.decision || '').toUpperCase() === 'WAIT' &&
+        Number(item.score) >= WAIT_RESEARCH_MIN_SCORE
+    );
     const waitAbove60 = history.filter(item =>
         String(item.decision || '').toUpperCase() === 'WAIT' &&
         Number(item.score) > 60
     );
 
     const tradeStats = summarizeSignalSubset(trades);
-    const waitStats = summarizeSignalSubset(waitAbove60);
+    const waitStats = summarizeSignalSubset(waitAtOrAbove50);
+    const legacyWaitAbove60Stats = summarizeSignalSubset(waitAbove60);
 
     // Keep freshness compatible with the previous TRADE statistics response.
     const freshness = {};
@@ -1209,9 +1264,14 @@ function getSignalStats() {
 
         // Explicit split for v5 research.
         trade: tradeStats,
+        waitAtOrAbove50: {
+            thresholdRule: `score >= ${WAIT_RESEARCH_MIN_SCORE}`,
+            ...waitStats
+        },
+        // Backward-compatible legacy slice.
         waitAbove60: {
             thresholdRule: 'score > 60',
-            ...waitStats
+            ...legacyWaitAbove60Stats
         },
         allLoggedRecords: history.length
     };
