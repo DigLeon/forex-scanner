@@ -2282,15 +2282,44 @@ app.get('/api/fast-recheck', (req, res) => {
 // repeatedly or two clients call /api/scan at the same time.
 let scanInProgress = false;
 
-// v4.17.1 — server-side Auto Scan.
-// The first manual /api/scan arms one repeating scan every 10 minutes.
-// It keeps running while the Node server is alive, even if the browser is closed.
+// v5.3.2 — server-side Auto Scan starts automatically with the Node server.
+// No manual SCAN NOW click is required. The first scan is launched shortly
+// after the HTTP server starts, then the existing 10-minute cadence continues.
 const AUTO_SCAN_INTERVAL_MS = Math.max(10 * 60 * 1000, Number(process.env.AUTO_SCAN_INTERVAL_MS) || 10 * 60 * 1000);
+const AUTO_SCAN_STARTUP_DELAY_MS = Math.max(1000, Number(process.env.AUTO_SCAN_STARTUP_DELAY_MS) || 2500);
 let autoScanTimer = null;
 let autoScanEnabled = false;
 let autoScanQuery = 'minScore=50&showWeak=1';
 let autoScanLastStartedAt = null;
 let autoScanNextAt = null;
+
+function executeAutoScan(reason = 'scheduled') {
+    if (!autoScanEnabled) return;
+    if (scanInProgress) {
+        console.log(`[AUTO SCAN] ${reason} skipped: scan already in progress`);
+        scheduleAutoScan();
+        return;
+    }
+
+    autoScanLastStartedAt = new Date().toISOString();
+    autoScanNextAt = null;
+    console.log(`[AUTO SCAN] ${reason} starting | next cycle interval:`, Math.round(AUTO_SCAN_INTERVAL_MS / 60000), 'min');
+
+    const http = require('http');
+    const request = http.get(`http://127.0.0.1:${PORT}/api/scan?${autoScanQuery}&auto=1`, response => {
+        response.resume();
+        response.on('end', () => scheduleAutoScan());
+    });
+
+    request.on('error', error => {
+        console.warn('[AUTO SCAN ERROR]', error.message);
+        scheduleAutoScan();
+    });
+
+    request.setTimeout(Math.max(60000, AUTO_SCAN_INTERVAL_MS), () => {
+        request.destroy(new Error('Auto scan request timeout'));
+    });
+}
 
 function scheduleAutoScan() {
     if (autoScanTimer) clearTimeout(autoScanTimer);
@@ -2298,23 +2327,7 @@ function scheduleAutoScan() {
     autoScanNextAt = new Date(Date.now() + AUTO_SCAN_INTERVAL_MS).toISOString();
     autoScanTimer = setTimeout(() => {
         autoScanTimer = null;
-        if (scanInProgress) {
-            console.log('[AUTO SCAN] skipped: scan already in progress');
-            scheduleAutoScan();
-            return;
-        }
-        autoScanLastStartedAt = new Date().toISOString();
-        console.log('[AUTO SCAN] starting | next cycle interval:', Math.round(AUTO_SCAN_INTERVAL_MS / 60000), 'min');
-        const http = require('http');
-        const request = http.get(`http://127.0.0.1:${PORT}/api/scan?${autoScanQuery}&auto=1`, response => {
-            response.resume();
-            response.on('end', () => scheduleAutoScan());
-        });
-        request.on('error', error => {
-            console.warn('[AUTO SCAN ERROR]', error.message);
-            scheduleAutoScan();
-        });
-        request.setTimeout(Math.max(60000, AUTO_SCAN_INTERVAL_MS), () => request.destroy(new Error('Auto scan request timeout')));
+        executeAutoScan('scheduled');
     }, AUTO_SCAN_INTERVAL_MS);
 }
 
@@ -7301,6 +7314,28 @@ app.listen(
         setRealtimeSymbols(
             marketPeriod.activePairs
         );
+
+
+        // ==============================================
+        // v5.3.2 AUTO SCAN STARTUP FIX
+        // ==============================================
+        // Arm Auto Scan immediately when the server starts. The first scan
+        // is delayed briefly so the listener and realtime symbol setup are
+        // fully ready. Session-off guards inside /api/scan and the shared
+        // REST updater remain authoritative.
+        autoScanEnabled = true;
+        autoScanNextAt = new Date(Date.now() + AUTO_SCAN_STARTUP_DELAY_MS).toISOString();
+        console.log(
+            '[AUTO SCAN] enabled on server startup | first scan in',
+            Math.round(AUTO_SCAN_STARTUP_DELAY_MS / 1000),
+            'sec | interval:',
+            Math.round(AUTO_SCAN_INTERVAL_MS / 60000),
+            'min'
+        );
+
+        setTimeout(() => {
+            executeAutoScan('startup');
+        }, AUTO_SCAN_STARTUP_DELAY_MS);
 
 
         console.log(
