@@ -441,7 +441,10 @@ async function bootstrapLocalHistory(
                         await getTimeSeries(
                             symbol, {
                                 interval: '1min',
-                                outputsize: requestedOutputsize
+                                outputsize: requestedOutputsize,
+                                // A targeted freshness rescue must reach Twelve Data
+                                // instead of being satisfied by the normal short-lived cache.
+                                bypassFreshCache: Boolean(force)
                             }
                         );
 
@@ -2329,7 +2332,7 @@ function armAutoScanFromRequest(req) {
 
 
 // ======================================================
-// v5.0.7 API ECONOMY V3 — SINGLE SHARED REST UPDATER
+// v5.2 SESSION-OFF API GUARD — SINGLE SHARED REST UPDATER
 // ======================================================
 // One owner of recurring time_series requests. Default 12s tick means
 // no more than ~5 scheduled refresh attempts/minute, leaving headroom
@@ -2341,9 +2344,27 @@ const SHARED_REST_UPDATER_TICK_MS = Math.max(
 let sharedRestUpdaterRunning = false;
 let sharedRestUpdaterIndex = 0;
 let sharedRestUpdaterLast = null;
+// Keep the most recently selected full-scan universe fresh as well.
+// This matters because dynamic prefilter rotation can select symbols that are
+// not part of the static session activePairs list.
+let lastDynamicScanPairs = [];
+const lastFullPipelineCandleBySymbol = new Map();
+
+// v5.3 — one targeted freshness rescue per symbol / closed 1M candle.
+// This prevents repeated force-refreshes when the provider returns the same
+// candle or temporarily falls back to stale cache.
+const targetedFreshnessRescueCandleBySymbol = new Map();
 
 function getSharedRestRefreshQueue() {
     const period = getActiveMarketPeriod();
+
+    // v5.2 — hard session-off guard. During rollover the scanner is OFF,
+    // so background REST refresh must also be OFF. Do not keep polling the
+    // previous dynamic universe, Fast Recheck watchlist, or pending symbols.
+    if (period.key === 'ROLLOVER' || period.selectionMode === 'SCANNER_OFF') {
+        return [];
+    }
+
     const queue = [];
     const seen = new Set();
 
@@ -2354,7 +2375,15 @@ function getSharedRestRefreshQueue() {
         queue.push(key);
     };
 
-    for (const symbol of (period.activePairs || [])) add(symbol);
+    // Once the full pipeline has selected its dynamic universe, keep THAT
+    // universe fresh instead of also polling the static session list. This
+    // prevents the queue from silently growing to ~10 symbols and pushing
+    // each selected pair beyond the 1M freshness window.
+    const primaryPairs = lastDynamicScanPairs.length ?
+        lastDynamicScanPairs :
+        (period.activePairs || []);
+
+    for (const symbol of primaryPairs) add(symbol);
     for (const symbol of fastRecheckWatchlist.keys()) add(symbol);
     for (const symbol of getPendingSignalSymbols()) add(symbol);
 
@@ -2363,6 +2392,11 @@ function getSharedRestRefreshQueue() {
 
 async function runSharedRestUpdater() {
     if (!autoScanEnabled || sharedRestUpdaterRunning || scanInProgress) return;
+
+    const period = getActiveMarketPeriod();
+    if (period.key === 'ROLLOVER' || period.selectionMode === 'SCANNER_OFF') {
+        return;
+    }
 
     const queue = getSharedRestRefreshQueue();
     if (!queue.length) return;
@@ -2465,8 +2499,12 @@ function requestDiscoveryPriorityScan(symbol) {
     if (!symbol || priorityScanPending.has(symbol) || scanInProgress) return false;
 
     const candleKey = getLatestClosed1mKey(symbol);
-    if (candleKey && candidateDiscoveryPriorityCandleKey.get(symbol) === candleKey) {
-        console.log('[CANDIDATE DISCOVERY] priority scan deduped', symbol, '| closed1m:', candleKey);
+    const alreadyAnalyzedCandle = lastFullPipelineCandleBySymbol.get(symbol) || null;
+    if (candleKey && (
+        candidateDiscoveryPriorityCandleKey.get(symbol) === candleKey ||
+        alreadyAnalyzedCandle === candleKey
+    )) {
+        console.log('[CANDIDATE DISCOVERY] priority scan deduped', symbol, '| closed1m:', candleKey, '| reason: SAME_FULL_PIPELINE_CANDLE');
         return false;
     }
 
@@ -2502,9 +2540,21 @@ async function runCandidateDiscovery() {
     try {
         const period = getActiveMarketPeriod();
         if (period.key === 'ROLLOVER') return;
-        const ranked = getRankedSessionPairs(period.key, CANDIDATE_DISCOVERY_PAIR_LIMIT);
+
+        // v5.1 — Candidate Discovery must inspect the SAME dynamic universe
+        // selected by the latest normal full scan. Falling back to the static
+        // session ranking is only allowed before the first dynamic selection.
+        const discoverySymbols = (lastDynamicScanPairs.length ?
+            lastDynamicScanPairs :
+            getRankedSessionPairs(period.key, CANDIDATE_DISCOVERY_PAIR_LIMIT).map(item => item.symbol)
+        ).slice(0, CANDIDATE_DISCOVERY_PAIR_LIMIT);
+
+        const ranked = discoverySymbols.map(symbol => ({
+            symbol,
+            sessionScore: getSessionPairScore(symbol, period.key)
+        }));
         const maxSessionScore = Math.max(1, ...ranked.map(item => Number(item.sessionScore) || 0));
-        console.log('[CANDIDATE DISCOVERY] starting | pairs:', ranked.map(x => x.symbol).join(', '));
+        console.log('[CANDIDATE DISCOVERY] starting | source:', lastDynamicScanPairs.length ? 'DYNAMIC_ACTIVE_PAIRS' : 'SESSION_FALLBACK', '| pairs:', ranked.map(x => x.symbol).join(', '));
         for (const item of ranked) {
             if (scanInProgress) break;
             try {
@@ -2902,6 +2952,9 @@ app.get(
 
         const requestedPrioritySymbol = String(req.query.symbol || '').trim();
         const activePairs = requestedPrioritySymbol ? [requestedPrioritySymbol] : selectedPrefilter.map(item => item.symbol);
+        if (!requestedPrioritySymbol) {
+            lastDynamicScanPairs = activePairs.slice(0, 5);
+        }
         if (requestedPrioritySymbol) console.log('[PRIORITY SCAN] strict full-pipeline single pair:', requestedPrioritySymbol);
 
 
@@ -3268,7 +3321,20 @@ app.get(
                     ) || null;
 
 
-                const candleData = {
+                const freshestClosedCandle =
+                    Array.isArray(closedCandles) && closedCandles.length ?
+                    closedCandles[0] : null;
+                const freshestClosedOpenTime = freshestClosedCandle && freshestClosedCandle.datetime ?
+                    parseCandleUtc(freshestClosedCandle.datetime) : null;
+                const mergedClosedAgeSeconds = freshestClosedOpenTime ?
+                    Math.max(
+                        0,
+                        Math.floor(
+                            (Date.now() - (freshestClosedOpenTime.getTime() + 60 * 1000)) / 1000
+                        )
+                    ) : null;
+
+                let candleData = {
 
                     livePrice: restSnapshot ?
                         restSnapshot.livePrice : null,
@@ -3278,41 +3344,13 @@ app.get(
                     newestApiCandle: restSnapshot ?
                         restSnapshot.newestApiCandle : null,
 
-                    newestClosedCandle: restSnapshot &&
-                        restSnapshot.newestClosedCandle ?
-                        restSnapshot.newestClosedCandle :
-                        (
-                            closedCandles.length ?
-                            closedCandles[0].datetime : null
-                        ),
+                    // IMPORTANT: freshness must describe the candles actually
+                    // passed into analysis after REST + local + WS merge.
+                    newestClosedCandle: freshestClosedCandle ?
+                        freshestClosedCandle.datetime :
+                        (restSnapshot ? restSnapshot.newestClosedCandle : null),
 
-                    newestClosedAgeSeconds: restSnapshot &&
-                        Number.isFinite(
-                            Number(
-                                restSnapshot.newestClosedAgeSeconds
-                            )
-                        ) ?
-                        Number(
-                            restSnapshot.newestClosedAgeSeconds
-                        ) :
-                        (
-                            closedCandles.length ?
-                            Math.max(
-                                0,
-                                Math.floor(
-                                    (
-                                        Date.now() -
-                                        (
-                                            parseCandleUtc(
-                                                closedCandles[0].datetime
-                                            ).getTime() +
-                                            60 * 1000
-                                        )
-                                    ) /
-                                    1000
-                                )
-                            ) : null
-                        ),
+                    newestClosedAgeSeconds: mergedClosedAgeSeconds,
 
                     firstCandleIsOpen: restSnapshot ?
                         Boolean(
@@ -3369,7 +3407,7 @@ app.get(
                     null;
 
 
-                const livePrice =
+                let livePrice =
                     realtimePrice !==
                     null ?
                     realtimePrice :
@@ -3487,7 +3525,7 @@ app.get(
                 // ANALYSIS ENGINE
                 // ======================================
 
-                const analysis =
+                let analysis =
                     combinedAnalysis(
                         symbol,
                         closedCandles,
@@ -3499,6 +3537,151 @@ app.get(
                                 scoreWeights
                         }
                     );
+
+                // ======================================
+                // v5.3 TARGETED FRESHNESS RESCUE
+                // ======================================
+                // Only a setup that is already strong enough AND currently
+                // in a usable entry zone may spend one extra REST credit.
+                // Weak / late candidates never trigger this path.
+                {
+                    const diagnostics = analysis && analysis.signalDiagnostics ?
+                        analysis.signalDiagnostics : {};
+                    const requiredScore = Number(
+                        diagnostics.requiredScore ?? diagnostics.effectiveMinScore
+                    );
+                    const candidateScore = Number(
+                        analysis && analysis.score !== undefined ?
+                        analysis.score : diagnostics.bestDirectionScore
+                    );
+                    const entry = analysis && analysis.entryZone ? analysis.entryZone : {};
+                    const entryStatus = String(entry.status || '').toUpperCase();
+                    const entryQuality = String(entry.currentEntryQuality || '').toUpperCase();
+                    const usableEntry =
+                        entryStatus === 'BEST ENTRY' ||
+                        entryStatus === 'GOOD ENTRY' ||
+                        entryStatus === 'ACCEPTABLE' ||
+                        entryQuality === 'BEST ENTRY' ||
+                        entryQuality === 'GOOD ENTRY' ||
+                        entryQuality === 'ACCEPTABLE';
+                    const blockers = Array.isArray(diagnostics.blockers) ? diagnostics.blockers : [];
+                    const staleBlocked = blockers.some(item =>
+                        String(item || '').toLowerCase().includes('market candle data is stale')
+                    ) || Number(analysis && analysis.signalAge && analysis.signalAge.seconds) > 120;
+                    const preRescueCandleKey = getLatestClosed1mKey(symbol);
+                    const alreadyRescued = preRescueCandleKey &&
+                        targetedFreshnessRescueCandleBySymbol.get(symbol) === preRescueCandleKey;
+
+                    if (
+                        staleBlocked &&
+                        usableEntry &&
+                        Number.isFinite(candidateScore) &&
+                        Number.isFinite(requiredScore) &&
+                        candidateScore >= requiredScore &&
+                        !alreadyRescued
+                    ) {
+                        if (preRescueCandleKey) {
+                            targetedFreshnessRescueCandleBySymbol.set(symbol, preRescueCandleKey);
+                        }
+
+                        console.log(
+                            '[FRESHNESS RESCUE] START', symbol,
+                            '| score:', candidateScore + '/' + requiredScore,
+                            '| entry:', entry.status || entry.currentEntryQuality || 'N/A',
+                            '| closed1m:', preRescueCandleKey || 'UNKNOWN'
+                        );
+
+                        try {
+                            closedCandles = await bootstrapLocalHistory(symbol, true);
+                            closedCandles = mergeClosedCandles(
+                                closedCandles,
+                                getRealtimeClosedCandles(symbol)
+                            );
+                            localHistoricalCandles.set(
+                                symbol,
+                                closedCandles.slice(0, LOCAL_HISTORY_LIMIT)
+                            );
+
+                            const refreshedSnapshot = latestRestSnapshots.get(symbol) || null;
+                            const refreshedClosedCandle = closedCandles.length ? closedCandles[0] : null;
+                            const refreshedOpenTime = refreshedClosedCandle && refreshedClosedCandle.datetime ?
+                                parseCandleUtc(refreshedClosedCandle.datetime) : null;
+                            const refreshedAgeSeconds = refreshedOpenTime ?
+                                Math.max(0, Math.floor(
+                                    (Date.now() - (refreshedOpenTime.getTime() + 60 * 1000)) / 1000
+                                )) : null;
+
+                            candleData = {
+                                livePrice: refreshedSnapshot ? refreshedSnapshot.livePrice : null,
+                                closedCandles,
+                                newestApiCandle: refreshedSnapshot ? refreshedSnapshot.newestApiCandle : null,
+                                newestClosedCandle: refreshedClosedCandle ?
+                                    refreshedClosedCandle.datetime :
+                                    (refreshedSnapshot ? refreshedSnapshot.newestClosedCandle : null),
+                                newestClosedAgeSeconds: refreshedAgeSeconds,
+                                firstCandleIsOpen: refreshedSnapshot ?
+                                    Boolean(refreshedSnapshot.firstCandleIsOpen) :
+                                    Boolean(getRealtimeCurrentCandle(symbol))
+                            };
+
+                            const refreshedRealtime = getLivePrice(symbol);
+                            const refreshedRealtimePrice = refreshedRealtime && refreshedRealtime.fresh &&
+                                Number.isFinite(Number(refreshedRealtime.price)) ?
+                                Number(refreshedRealtime.price) : null;
+                            const refreshedRestPrice = Number.isFinite(Number(candleData.livePrice)) ?
+                                Number(candleData.livePrice) : null;
+                            const refreshedLocalPrice = closedCandles.length ? Number(closedCandles[0].close) : null;
+
+                            livePrice = refreshedRealtimePrice !== null ?
+                                refreshedRealtimePrice :
+                                (refreshedRestPrice !== null ?
+                                    refreshedRestPrice :
+                                    (Number.isFinite(refreshedLocalPrice) ? refreshedLocalPrice : livePrice));
+
+                            analysis = combinedAnalysis(
+                                symbol,
+                                closedCandles,
+                                livePrice,
+                                { userMinScore, scoreWeights }
+                            );
+
+                            const afterDiagnostics = analysis && analysis.signalDiagnostics ?
+                                analysis.signalDiagnostics : {};
+                            const afterBlockers = Array.isArray(afterDiagnostics.blockers) ?
+                                afterDiagnostics.blockers : [];
+                            const stillStale = afterBlockers.some(item =>
+                                String(item || '').toLowerCase().includes('market candle data is stale')
+                            ) || Number(analysis && analysis.signalAge && analysis.signalAge.seconds) > 120;
+
+                            console.log(
+                                '[FRESHNESS RESCUE] END', symbol,
+                                '| source:', refreshedSnapshot && refreshedSnapshot.marketData ?
+                                    refreshedSnapshot.marketData.source : 'UNKNOWN',
+                                '| age:', analysis && analysis.signalAge ? analysis.signalAge.seconds : refreshedAgeSeconds,
+                                '| stale:', stillStale,
+                                '| score:', Number(analysis && analysis.score) || 0,
+                                '| entry:', analysis && analysis.entryZone ?
+                                    (analysis.entryZone.status || analysis.entryZone.currentEntryQuality || 'N/A') : 'N/A'
+                            );
+                        } catch (freshnessError) {
+                            console.warn(
+                                '[FRESHNESS RESCUE] FAILED', symbol,
+                                '|', freshnessError.message
+                            );
+                        }
+                    } else if (staleBlocked && alreadyRescued) {
+                        console.log(
+                            '[FRESHNESS RESCUE] DEDUPED', symbol,
+                            '| closed1m:', preRescueCandleKey
+                        );
+                    }
+                }
+
+                const analyzedClosed1mKey = getLatestClosed1mKey(symbol);
+                if (analyzedClosed1mKey) {
+                    lastFullPipelineCandleBySymbol.set(symbol, analyzedClosed1mKey);
+                }
+
         rememberAnalysisForRealtime(symbol, analysis);
 
                 // ======================================

@@ -553,7 +553,13 @@ async function getTimeSeries(
     // FRESH CACHE
     // ==================================================
 
+    const bypassFreshCache =
+        Boolean(options.bypassFreshCache);
+
+
     const fresh =
+        bypassFreshCache ?
+        null :
         getCached(
             key,
             CACHE_TTL_MS
