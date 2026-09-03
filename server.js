@@ -14,7 +14,8 @@ const {
     getSignalHistory,
     getSignalStats,
     observePendingSignals,
-    getPendingSignalSymbols
+    getPendingSignalSymbols,
+    logSignalSkipDiagnostic
 } = require('./signalLogger');
 
 const {
@@ -4644,12 +4645,12 @@ app.get(
                         };
                         recordStage(earlyPayload);
 
-                        // v5.3.3 research: track WAIT setups from score 50 separately
+                        // v5.3.4.4 research: track GUI WAIT setups with score strictly above 50 separately
                         // from real TRADE statistics. This is a PAPER/statistics stream only.
                         // We only persist the WAIT once an expiration exists, because
                         // without a horizon there is no meaningful WIN/LOSS outcome.
                         if (
-                            Number(score) >= 50 &&
+                            Number(score) > 50 &&
                             Number.isFinite(Number(recommendedExpiration)) &&
                             Number(recommendedExpiration) > 0 &&
                             Number.isFinite(Number(livePrice))
@@ -4699,6 +4700,35 @@ app.get(
                             } catch (waitLoggerError) {
                                 console.error('[WAIT RESEARCH LOGGER ERROR]', symbol, waitLoggerError.message);
                             }
+                        } else {
+                            const waitDiagnosticPayload = {
+                                symbol,
+                                signal,
+                                decision: 'WAIT',
+                                score,
+                                expirationMinutes: recommendedExpiration,
+                                price: livePrice,
+                                referencePrice: analysis.referencePrice || livePrice,
+                                signalAge
+                            };
+
+                            let waitSkipReason = 'WAIT_RESEARCH_GATE';
+                            if (Number(score) <= 50) {
+                                waitSkipReason = 'SCORE_NOT_ABOVE_50';
+                            } else if (
+                                !Number.isFinite(Number(recommendedExpiration)) ||
+                                Number(recommendedExpiration) <= 0
+                            ) {
+                                waitSkipReason = 'NO_VALID_EXPIRATION';
+                            } else if (!Number.isFinite(Number(livePrice))) {
+                                waitSkipReason = 'NO_VALID_PRICE';
+                            }
+
+                            logSignalSkipDiagnostic(
+                                waitDiagnosticPayload,
+                                waitSkipReason,
+                                'WAIT research gate'
+                            );
                         }
 
                         const earlyEntry = String(entryZone.currentEntryQuality || entryZone.status || '').toUpperCase();

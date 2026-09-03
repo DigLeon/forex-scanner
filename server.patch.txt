@@ -1,0 +1,50 @@
+*** server.js
+@@
+ const {
+     logSignal,
+     ...
+ } = require('./signalLogger');
++
++const {
++    buildResearchMetadata
++} = require('./researchMetadata');
+
+@@
+                 const signalStrength =
+                     analysis.signalStrength || {
+                         ...
+                     };
++
++                // ======================================
++                // RESEARCH METADATA — v5.3.4.5
++                //
++                // Statistics only. Does NOT participate
++                // in Score / Entry / Expiration logic.
++                // ======================================
++                const researchMetadata =
++                    buildResearchMetadata({
++                        closedCandles,
++                        entryZone,
++                        currentPrice: livePrice,
++                        signalAge,
++                        candleConfirmation:
++                            analysis.candleConfirmation ||
++                            null,
++                        marketRegime:
++                            analysis.marketRegime ||
++                            null
++                    });
+
+@@ WAIT logSignal({
+                                     diagnostics: analysis.signalDiagnostics || null,
++                                    researchMetadata
+                                 });
+
+@@ TRADE logSignal({
+                                     diagnostics: analysis.signalDiagnostics || null,
++                                    researchMetadata
+                                 });
+
+NOTE:
+Use the same `researchMetadata` object in BOTH WAIT and TRADE calls to `logSignal`.
+Do not add it to CANDIDATE/SKIP logging.
