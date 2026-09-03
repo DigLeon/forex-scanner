@@ -13,7 +13,8 @@ const HISTORY_FILE =
 
 
 // v4.17 Outcome Engine: fixed research checkpoints used for comparable statistics.
-const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15, 20, 30];
+const OUTCOME_HORIZONS_MINUTES = [3, 5, 10, 15, 20, 22, 25, 30];
+const EXPIRATION_GENERATION_PRICE_HORIZONS_MINUTES = [5, 10, 15, 20, 30];
 const WAIT_RESEARCH_MIN_SCORE = 50;
 const OUTCOME_FLAT_BPS = Math.max(0, Number(process.env.OUTCOME_FLAT_BPS) || 0.5);
 
@@ -265,107 +266,105 @@ function getResearchHorizons(
 // SHOULD LOG?
 // ======================================================
 
-function shouldLogSignal(
+function getSignalLogSkipReason(
     result
 ) {
 
     if (!result) {
-        return false;
+        return 'NO_RESULT';
     }
-
 
     if (
-        result.signal !==
-        'UP' &&
-        result.signal !==
-        'DOWN'
+        result.signal !== 'UP' &&
+        result.signal !== 'DOWN'
     ) {
-        return false;
+        return 'INVALID_DIRECTION';
     }
 
+    const decision = String(result.decision || result.action || '').toUpperCase();
 
-    const expirationMinutes =
-        Number(
-            result.recommendedExpiration !==
-                undefined &&
-            result.recommendedExpiration !==
-                null
-                ?
-                result.recommendedExpiration
-                :
-                result.expirationMinutes
-        );
+    // v5.3.4.4 research rule:
+    // persist only GUI WAIT/TRADE decisions with score strictly above 50.
+    if (decision !== 'WAIT' && decision !== 'TRADE') {
+        return 'UNSUPPORTED_DECISION';
+    }
 
+    const score = Number(result.score);
+    if (!Number.isFinite(score) || score <= 50) {
+        return 'SCORE_NOT_ABOVE_50';
+    }
+
+    const expirationMinutes = Number(
+        result.recommendedExpiration !== undefined &&
+        result.recommendedExpiration !== null
+            ? result.recommendedExpiration
+            : result.expirationMinutes
+    );
 
     if (
-        !Number.isFinite(
-            expirationMinutes
-        ) ||
-        expirationMinutes <=
-            0
+        !Number.isFinite(expirationMinutes) ||
+        expirationMinutes <= 0
     ) {
-
-        return false;
+        return 'NO_VALID_EXPIRATION';
     }
 
+    const watchPrice = Number(
+        result.watchPrice !== undefined &&
+        result.watchPrice !== null
+            ? result.watchPrice
+            : (
+                result.referencePrice !== undefined &&
+                result.referencePrice !== null
+                    ? result.referencePrice
+                    : (
+                        result.currentPrice !== undefined &&
+                        result.currentPrice !== null
+                            ? result.currentPrice
+                            : result.price
+                    )
+            )
+    );
 
-    const watchPrice =
-        Number(
-            result.watchPrice !==
-                undefined &&
-            result.watchPrice !==
-                null
-                ?
-                result.watchPrice
-                :
-                (
-                    result.referencePrice !==
-                        undefined &&
-                    result.referencePrice !==
-                        null
-                        ?
-                        result.referencePrice
-                        :
-                        (
-                            result.currentPrice !==
-                                undefined &&
-                            result.currentPrice !==
-                                null
-                                ?
-                                result.currentPrice
-                                :
-                                result.price
-                        )
-                )
-        );
-
-
-    if (
-        !Number.isFinite(
-            watchPrice
-        )
-    ) {
-
-        return false;
+    if (!Number.isFinite(watchPrice)) {
+        return 'NO_VALID_PRICE';
     }
 
+    // Data freshness is kept as metadata for later analysis, but it no longer
+    // blocks research logging. If a WAIT/TRADE is visible in the GUI and its
+    // score is > 50, we want it in the end-of-day sample.
+    return null;
+}
 
-    const dataAgeStatus =
-        getDataAgeStatus(
-            result
-        );
+function logSignalSkipDiagnostic(result, reason, extra = null) {
+    const symbol = result && result.symbol ? result.symbol : 'UNKNOWN';
+    const signal = result && result.signal ? result.signal : 'UNKNOWN';
+    const decision = String(
+        (result && (result.decision || result.action)) || 'TRADE'
+    ).toUpperCase();
+    const score = Number(result && result.score);
+    const expirationMinutes = Number(
+        result && result.recommendedExpiration !== undefined &&
+        result.recommendedExpiration !== null
+            ? result.recommendedExpiration
+            : result && result.expirationMinutes
+    );
+    const dataAgeStatus = getDataAgeStatus(result);
 
+    console.log(
+        '[SIGNAL LOGGER SKIP]',
+        `${symbol} ${signal} ${decision}`,
+        '| Reason:', reason,
+        '| Score:', Number.isFinite(score) ? score : 'N/A',
+        '| Exp:', Number.isFinite(expirationMinutes) ? expirationMinutes : 'N/A',
+        '| Data:', dataAgeStatus,
+        extra ? `| ${extra}` : ''
+    );
+}
 
-    // Do not log stale paper signals
-    if (
-        dataAgeStatus ===
-        'STALE'
-    ) {
-        return false;
-    }
-
-
-    return true;
+function shouldLogSignal(
+    result
+) {
+    return getSignalLogSkipReason(result) === null;
 }
 
 
@@ -423,9 +422,10 @@ function logSignal(
     result
 ) {
 
-    if (!shouldLogSignal(
-            result
-        )) {
+    const skipReason = getSignalLogSkipReason(result);
+
+    if (skipReason) {
+        logSignalSkipDiagnostic(result, skipReason);
         return null;
     }
 
@@ -444,6 +444,7 @@ function logSignal(
             result
         )
     ) {
+        logSignalSkipDiagnostic(result, 'RECENT_DUPLICATE');
         return null;
     }
 
@@ -505,7 +506,6 @@ function logSignal(
     const expirationGeneratedAtMs = Number.isFinite(suppliedExpirationGeneratedAtMs)
         ? suppliedExpirationGeneratedAtMs
         : (Number.isFinite(suppliedExpirationGeneratedAt) ? suppliedExpirationGeneratedAt : now);
-    const priceAfter20MinutesTargetAtMs = expirationGeneratedAtMs + 20 * 60 * 1000;
 
     const layers =
         result.multiTimeframe &&
@@ -779,19 +779,52 @@ function logSignal(
 
         // ==================================================
         // EXPIRATION-GENERATION RESEARCH CLOCK
-        // Dedicated 20-minute price checkpoint measured from
-        // the moment the expiration time was generated.
-        // This is tracked for WAIT and TRADE records alike.
+        // Dedicated market-price checkpoints measured from the
+        // exact moment the expiration timestamp was generated.
+        // Tracked for WAIT and TRADE records alike.
         // ==================================================
         expirationGeneratedAt: new Date(expirationGeneratedAtMs).toISOString(),
         expirationGeneratedAtMs: expirationGeneratedAtMs,
-        priceAfter20MinutesTargetAt: new Date(priceAfter20MinutesTargetAtMs).toISOString(),
-        priceAfter20MinutesTargetAtMs: priceAfter20MinutesTargetAtMs,
+
+        priceAfter5MinutesTargetAt: new Date(expirationGeneratedAtMs + 5 * 60 * 1000).toISOString(),
+        priceAfter5MinutesTargetAtMs: expirationGeneratedAtMs + 5 * 60 * 1000,
+        priceAfter5Minutes: null,
+        priceAfter5MinutesObservedAt: null,
+        priceAfter5MinutesStatus: 'PENDING',
+        priceAfter5MinutesApproximate: null,
+        priceAfter5MinutesSource: null,
+
+        priceAfter10MinutesTargetAt: new Date(expirationGeneratedAtMs + 10 * 60 * 1000).toISOString(),
+        priceAfter10MinutesTargetAtMs: expirationGeneratedAtMs + 10 * 60 * 1000,
+        priceAfter10Minutes: null,
+        priceAfter10MinutesObservedAt: null,
+        priceAfter10MinutesStatus: 'PENDING',
+        priceAfter10MinutesApproximate: null,
+        priceAfter10MinutesSource: null,
+
+        priceAfter15MinutesTargetAt: new Date(expirationGeneratedAtMs + 15 * 60 * 1000).toISOString(),
+        priceAfter15MinutesTargetAtMs: expirationGeneratedAtMs + 15 * 60 * 1000,
+        priceAfter15Minutes: null,
+        priceAfter15MinutesObservedAt: null,
+        priceAfter15MinutesStatus: 'PENDING',
+        priceAfter15MinutesApproximate: null,
+        priceAfter15MinutesSource: null,
+
+        priceAfter20MinutesTargetAt: new Date(expirationGeneratedAtMs + 20 * 60 * 1000).toISOString(),
+        priceAfter20MinutesTargetAtMs: expirationGeneratedAtMs + 20 * 60 * 1000,
         priceAfter20Minutes: null,
         priceAfter20MinutesObservedAt: null,
         priceAfter20MinutesStatus: 'PENDING',
         priceAfter20MinutesApproximate: null,
         priceAfter20MinutesSource: null,
+
+        priceAfter30MinutesTargetAt: new Date(expirationGeneratedAtMs + 30 * 60 * 1000).toISOString(),
+        priceAfter30MinutesTargetAtMs: expirationGeneratedAtMs + 30 * 60 * 1000,
+        priceAfter30Minutes: null,
+        priceAfter30MinutesObservedAt: null,
+        priceAfter30MinutesStatus: 'PENDING',
+        priceAfter30MinutesApproximate: null,
+        priceAfter30MinutesSource: null,
 
         // ==================================================
         // STATUS
@@ -882,7 +915,7 @@ function parseOutcomeCandleTime(value) {
     return Number.isNaN(date.getTime()) ? null : date.getTime();
 }
 
-function historicalCloseAtOrBefore(candles, targetMs) {
+function historicalCloseAtOrAfter(candles, targetMs) {
     if (!Array.isArray(candles) || !Number.isFinite(Number(targetMs))) return null;
     let best = null;
     for (const candle of candles) {
@@ -890,7 +923,7 @@ function historicalCloseAtOrBefore(candles, targetMs) {
         const close = Number(candle && candle.close);
         if (!Number.isFinite(openMs) || !Number.isFinite(close)) continue;
         const closeMs = openMs + 60 * 1000;
-        if (closeMs <= targetMs && (!best || closeMs > best.closeMs)) {
+        if (closeMs >= targetMs && (!best || closeMs < best.closeMs)) {
             best = { price: close, closeMs, datetime: candle.datetime };
         }
     }
@@ -920,26 +953,53 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
         const start = Number(record.entryPrice);
         if (!Number.isFinite(start) || start <= 0) continue;
 
-        // Dedicated research checkpoint: capture the market price exactly
-        // 20 minutes after the expiration timestamp was GENERATED, even if
-        // the record was WAIT and even if its main expiration already ended.
-        if (String(record.priceAfter20MinutesStatus || '').toUpperCase() === 'PENDING') {
-            const target20Ms = Number(record.priceAfter20MinutesTargetAtMs);
-            if (Number.isFinite(target20Ms) && atMs >= target20Ms) {
-                const exact20 = historicalCloseAtOrBefore(options.candles, target20Ms);
-                const observed20Price = exact20 ? exact20.price : price;
-                const observed20AtMs = exact20 ? exact20.closeMs : atMs;
-                record.priceAfter20Minutes = observed20Price;
-                record.priceAfter20MinutesObservedAt = new Date(observed20AtMs).toISOString();
-                record.priceAfter20MinutesStatus = 'COMPLETED';
-                record.priceAfter20MinutesApproximate = !exact20;
-                record.priceAfter20MinutesSource = exact20
-                    ? 'CLOSED_1M_AT_OR_BEFORE_TARGET'
-                    : 'LIVE_SAMPLE';
+        // Dedicated research checkpoints: capture the market price at
+        // +5m / +10m / +15m / +20m / +30m from the exact moment the
+        // expiration timestamp was GENERATED. This remains active even
+        // after the main signal has already been completed.
+        for (const minutes of EXPIRATION_GENERATION_PRICE_HORIZONS_MINUTES) {
+            const prefix = `priceAfter${minutes}Minutes`;
+            const statusKey = `${prefix}Status`;
+            const targetKey = `${prefix}TargetAtMs`;
+            const targetIsoKey = `${prefix}TargetAt`;
+            const observedAtKey = `${prefix}ObservedAt`;
+            const approximateKey = `${prefix}Approximate`;
+            const sourceKey = `${prefix}Source`;
+
+            // Backward compatibility for older records that already have
+            // expirationGeneratedAtMs but not the newly added checkpoints.
+            if (!record[statusKey] && Number.isFinite(Number(record.expirationGeneratedAtMs))) {
+                const targetMs = Number(record.expirationGeneratedAtMs) + minutes * 60 * 1000;
+                record[targetKey] = targetMs;
+                record[targetIsoKey] = new Date(targetMs).toISOString();
+                record[prefix] = null;
+                record[observedAtKey] = null;
+                record[statusKey] = 'PENDING';
+                record[approximateKey] = null;
+                record[sourceKey] = null;
                 changed = true;
-                updated.push(record);
-                console.log('[PRICE +20M]', record.symbol, record.signal, '| decision:', record.decision, '| price:', observed20Price);
             }
+
+            if (String(record[statusKey] || '').toUpperCase() !== 'PENDING') continue;
+
+            const targetMs = Number(record[targetKey]);
+            if (!Number.isFinite(targetMs) || atMs < targetMs) continue;
+
+            const exact = historicalCloseAtOrAfter(options.candles, targetMs);
+            const observedPrice = exact ? exact.price : price;
+            const observedAt = exact ? exact.closeMs : atMs;
+
+            record[prefix] = observedPrice;
+            record[observedAtKey] = new Date(observedAt).toISOString();
+            record[statusKey] = 'COMPLETED';
+            record[approximateKey] = !exact;
+            record[sourceKey] = exact
+                ? 'CLOSED_1M_AT_OR_BEFORE_TARGET'
+                : 'LIVE_SAMPLE';
+
+            changed = true;
+            updated.push(record);
+            console.log(`[PRICE +${minutes}M]`, record.symbol, record.signal, '| decision:', record.decision, '| price:', observedPrice);
         }
 
         if (record.status !== 'PENDING') continue;
@@ -964,7 +1024,7 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
             const key = `${Number(minutes)}m`;
             const targetMs = Number(record.createdAtMs || 0) + Number(minutes) * 60 * 1000;
             if (record.researchResults[key] || atMs < targetMs) continue;
-            const exact = historicalCloseAtOrBefore(options.candles, targetMs);
+            const exact = historicalCloseAtOrAfter(options.candles, targetMs);
             const outcomePrice = exact ? exact.price : price;
             const outcomeAtMs = exact ? exact.closeMs : atMs;
             const outcomeRawBps = ((outcomePrice - start) / start) * 10000;
@@ -977,7 +1037,14 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
                 mfeBps: +Number(t.mfeBps || 0).toFixed(3), maeBps: +Number(t.maeBps || 0).toFixed(3),
                 approximate: !exact,
                 priceSource: exact ? 'CLOSED_1M_AT_OR_BEFORE_TARGET' : 'LIVE_SAMPLE',
-                targetDeltaMs: exact ? targetMs - exact.closeMs : atMs - targetMs
+                targetDeltaMs: exact ? exact.closeMs - targetMs : atMs - targetMs,
+                targetTime: new Date(targetMs).toISOString(),
+                observedTime: new Date(outcomeAtMs).toISOString(),
+                targetDeltaSeconds: +((outcomeAtMs - targetMs) / 1000).toFixed(3),
+                observedPrice: outcomePrice,
+                samplesCount: Number(t.samples || 0),
+                resultValid: Boolean(exact) && outcomeAtMs >= targetMs && ((outcomeAtMs - targetMs) / 1000) <= (Number(process.env.MAX_VALID_TARGET_DELTA_SECONDS) || 90),
+                invalidReason: !exact ? 'LIVE_SAMPLE_APPROXIMATE' : (((outcomeAtMs - targetMs) / 1000) > (Number(process.env.MAX_VALID_TARGET_DELTA_SECONDS) || 90) ? 'OBSERVATION_TOO_LATE' : null)
             };
             console.log('[OUTCOME]', record.symbol, record.signal, '|', key, outcome, '| MFE:', Number(t.mfeBps || 0).toFixed(2), 'bps | MAE:', Number(t.maeBps || 0).toFixed(2), 'bps');
         }
@@ -989,8 +1056,24 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
     return updated;
 }
 
+function hasPendingExpirationGenerationPriceCheckpoint(record) {
+    if (!record || !record.symbol) return false;
+    return EXPIRATION_GENERATION_PRICE_HORIZONS_MINUTES.some(minutes => {
+        const status = record[`priceAfter${minutes}MinutesStatus`];
+        // Older records may not yet contain all checkpoint fields. If they
+        // have an expiration-generation clock, keep them eligible until
+        // observePendingSignals lazily initializes the missing checkpoints.
+        if (!status && Number.isFinite(Number(record.expirationGeneratedAtMs))) return true;
+        return String(status || '').toUpperCase() === 'PENDING';
+    });
+}
+
 function getPendingSignalSymbols() {
-    return Array.from(new Set(loadHistory().filter(x => x.symbol && (x.status === 'PENDING' || String(x.priceAfter20MinutesStatus || '').toUpperCase() === 'PENDING')).map(x => x.symbol)));
+    return Array.from(new Set(
+        loadHistory()
+            .filter(x => x.symbol && (x.status === 'PENDING' || hasPendingExpirationGenerationPriceCheckpoint(x)))
+            .map(x => x.symbol)
+    ));
 }
 
 // ======================================================
@@ -1028,7 +1111,7 @@ function resolveSignal(
     }
 
 
-    const exactExpiry = historicalCloseAtOrBefore(options.candles, Number(record.expiryAtMs));
+    const exactExpiry = historicalCloseAtOrAfter(options.candles, Number(record.expiryAtMs));
     const price = Number(exactExpiry ? exactExpiry.price : currentPrice);
 
 
@@ -1086,8 +1169,13 @@ function resolveSignal(
     record.resultPriceSource = exactExpiry ? 'CLOSED_1M_AT_OR_BEFORE_EXPIRY' : 'LIVE_SAMPLE';
     record.resultApproximate = !exactExpiry;
     record.resultTargetDeltaMs = exactExpiry && Number.isFinite(Number(record.expiryAtMs))
-        ? Number(record.expiryAtMs) - exactExpiry.closeMs
+        ? exactExpiry.closeMs - Number(record.expiryAtMs)
         : null;
+    record.resultTargetDeltaSeconds = exactExpiry && Number.isFinite(Number(record.expiryAtMs))
+        ? +((exactExpiry.closeMs - Number(record.expiryAtMs)) / 1000).toFixed(3)
+        : null;
+    record.resultValid = Boolean(exactExpiry) && record.resultTargetDeltaSeconds >= 0 && record.resultTargetDeltaSeconds <= (Number(process.env.MAX_VALID_TARGET_DELTA_SECONDS) || 90);
+    record.resultInvalidReason = !exactExpiry ? 'LIVE_SAMPLE_APPROXIMATE' : (record.resultValid ? null : 'OBSERVATION_TOO_LATE');
 
 
     saveHistory(

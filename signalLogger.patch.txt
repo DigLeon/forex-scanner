@@ -1,0 +1,80 @@
+*** signalLogger.js
+@@ inside `const record = { ... }`, after decision-quality fields:
+
+        // ==================================================
+        // RESEARCH METADATA — v5.3.4.5
+        //
+        // Saved for later statistical analysis only.
+        // Never used as an execution gate here.
+        // ==================================================
+
+        researchMetadata:
+            result.researchMetadata ||
+            null,
+
+        rsi1m:
+            result.researchMetadata
+                ? result.researchMetadata.rsi1m
+                : null,
+
+        rsi5m:
+            result.researchMetadata
+                ? result.researchMetadata.rsi5m
+                : null,
+
+        rsi15m:
+            result.researchMetadata
+                ? result.researchMetadata.rsi15m
+                : null,
+
+        atr1m:
+            result.researchMetadata
+                ? result.researchMetadata.atr1m
+                : null,
+
+        atr1mPct:
+            result.researchMetadata
+                ? result.researchMetadata.atr1mPct
+                : null,
+
+        atr5m:
+            result.researchMetadata
+                ? result.researchMetadata.atr5m
+                : null,
+
+        atr5mPct:
+            result.researchMetadata
+                ? result.researchMetadata.atr5mPct
+                : null,
+
+        atr15m:
+            result.researchMetadata
+                ? result.researchMetadata.atr15m
+                : null,
+
+        atr15mPct:
+            result.researchMetadata
+                ? result.researchMetadata.atr15mPct
+                : null,
+
+        macd5mLine:
+            result.researchMetadata
+                ? result.researchMetadata.macd5mLine
+                : null,
+
+        macd5mSignal:
+            result.researchMetadata
+                ? result.researchMetadata.macd5mSignal
+                : null,
+
+        macd5mHistogram:
+            result.researchMetadata
+                ? result.researchMetadata.macd5mHistogram
+                : null,
+
+        distanceToBestEntryAtr:
+            result.researchMetadata
+                ? result.researchMetadata.distanceToBestEntryAtr
+                : null,
+
+No changes are required to outcome/checkpoint logic.

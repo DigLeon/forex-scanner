@@ -14,8 +14,14 @@ const {
     getSignalHistory,
     getSignalStats,
     observePendingSignals,
-    getPendingSignalSymbols
+    getPendingSignalSymbols,
+    logSignalSkipDiagnostic
 } = require('./signalLogger');
+
+const {
+    logCheckedAnalysis,
+    updateAuditOutcomesForSymbol
+} = require('./analysisAuditLogger');
 
 const {
     logScoreDiagnostic,
@@ -1209,6 +1215,7 @@ async function checkExpiredPaperSignals() {
 
             const outcomeCandles = getLocalHistory(signal.symbol);
             observePendingSignals(signal.symbol, currentPrice, Date.now(), { candles: outcomeCandles });
+            updateAuditOutcomesForSymbol(signal.symbol, currentPrice, Date.now(), { candles: outcomeCandles });
 
             resolveSignal(
                 signal.id,
@@ -2102,6 +2109,7 @@ async function runFastRestRecheck() {
 
                 // Reuse the price we already fetched for Fast Recheck; no extra REST credit.
                 observePendingSignals(symbol, livePrice, Date.now(), { candles: closedCandles });
+                updateAuditOutcomesForSymbol(symbol, livePrice, Date.now(), { candles: closedCandles });
 
                 const analysis = combinedAnalysis(symbol, closedCandles, livePrice, {
                     userMinScore: watch.userMinScore,
@@ -2722,6 +2730,8 @@ app.get(
         scanInProgress = true;
 
         try {
+
+        const analysisBatchId = `FOREX-SCAN-${new Date().toISOString()}-${Date.now()}`;
 
         // ==============================================
         // v4.7.3 USER MINIMUM SIGNAL SCORE
@@ -4601,6 +4611,44 @@ app.get(
                     'SKIP' :
                     (waitEntry ? 'WAIT' : 'TRADE');
 
+                // v5.3.4.6 immutable audit snapshot: persist EVERY analyzed pair,
+                // including WAIT/SKIP/NO_TRADE. This is separate from signal-history.json.
+                try {
+                    logCheckedAnalysis({
+                        ...analysis,
+                        symbol,
+                        signal,
+                        decision: executionAction,
+                        currentPrice: livePrice,
+                        watchPrice: livePrice,
+                        recommendedExpiration,
+                        expirationMinutes: recommendedExpiration,
+                        expirationAt,
+                        expirationAtMs,
+                        entryZone,
+                        signalStrength,
+                        signalAge,
+                        pairSession,
+                        primaryStrategy
+                    }, {
+                        batchId: analysisBatchId,
+                        timezone: 'America/Toronto',
+                        marketDataTimestamp: candleData.newestClosedCandle || null,
+                        featureSnapshot: {
+                            multiTimeframe: analysis.multiTimeframe || null,
+                            diagnostics: analysis.signalDiagnostics || analysis.diagnostics || null,
+                            entryZone: entryZone || null,
+                            signalStrength: signalStrength || null,
+                            candleConfirmation: analysis.candleConfirmation || null,
+                            marketRegime: analysis.marketRegime || null,
+                            primaryStrategy: primaryStrategy || null,
+                            pairSession: pairSession || null
+                        }
+                    });
+                } catch (auditError) {
+                    console.error('[ANALYSIS AUDIT ERROR]', symbol, auditError.message);
+                }
+
                 if (executionAction !== 'TRADE') {
                     console.log(
                         '[SCAN ' + executionAction + ']',
@@ -4644,12 +4692,12 @@ app.get(
                         };
                         recordStage(earlyPayload);
 
-                        // v5.3.3 research: track WAIT setups from score 50 separately
+                        // v5.3.4.4 research: track GUI WAIT setups with score strictly above 50 separately
                         // from real TRADE statistics. This is a PAPER/statistics stream only.
                         // We only persist the WAIT once an expiration exists, because
                         // without a horizon there is no meaningful WIN/LOSS outcome.
                         if (
-                            Number(score) >= 50 &&
+                            Number(score) > 50 &&
                             Number.isFinite(Number(recommendedExpiration)) &&
                             Number(recommendedExpiration) > 0 &&
                             Number.isFinite(Number(livePrice))
@@ -4699,6 +4747,35 @@ app.get(
                             } catch (waitLoggerError) {
                                 console.error('[WAIT RESEARCH LOGGER ERROR]', symbol, waitLoggerError.message);
                             }
+                        } else {
+                            const waitDiagnosticPayload = {
+                                symbol,
+                                signal,
+                                decision: 'WAIT',
+                                score,
+                                expirationMinutes: recommendedExpiration,
+                                price: livePrice,
+                                referencePrice: analysis.referencePrice || livePrice,
+                                signalAge
+                            };
+
+                            let waitSkipReason = 'WAIT_RESEARCH_GATE';
+                            if (Number(score) <= 50) {
+                                waitSkipReason = 'SCORE_NOT_ABOVE_50';
+                            } else if (
+                                !Number.isFinite(Number(recommendedExpiration)) ||
+                                Number(recommendedExpiration) <= 0
+                            ) {
+                                waitSkipReason = 'NO_VALID_EXPIRATION';
+                            } else if (!Number.isFinite(Number(livePrice))) {
+                                waitSkipReason = 'NO_VALID_PRICE';
+                            }
+
+                            logSignalSkipDiagnostic(
+                                waitDiagnosticPayload,
+                                waitSkipReason,
+                                'WAIT research gate'
+                            );
                         }
 
                         const earlyEntry = String(entryZone.currentEntryQuality || entryZone.status || '').toUpperCase();
@@ -7026,6 +7103,7 @@ async function samplePendingSignalOutcomes() {
 
                 const outcomeCandles = getLocalHistory(symbol);
                 observePendingSignals(symbol, price, Date.now(), { candles: outcomeCandles });
+                updateAuditOutcomesForSymbol(symbol, price, Date.now(), { candles: outcomeCandles });
                 console.log('[OUTCOME SAMPLE]', symbol, '| price:', price, '| source:', source);
             } catch (error) {
                 console.warn('[OUTCOME SAMPLE ERROR]', symbol, error.message);

@@ -1737,18 +1737,35 @@
         }
 
 
+        function isExpiredGuiItem(item) {
+            if (!item || !item.expirationAt) return false;
+
+            const action = String(item.action || item.decision || "").toUpperCase();
+            const timedActions = new Set(["TRADE", "WAIT", "READY", "CANDIDATE"]);
+            if (!timedActions.has(action)) return false;
+
+            const expirationMs = Date.parse(item.expirationAt);
+            if (!Number.isFinite(expirationMs)) return false;
+
+            return Date.now() >= expirationMs;
+        }
+
+
         function applyDisplayPreferences() {
 
             const visibleResults =
                 sortResultsForDisplay(
-                    lastRawResults.filter(
-                        passesMinimumScoreFilter
-                    )
+                    lastRawResults
+                        .filter(item => !isExpiredGuiItem(item))
+                        .filter(
+                            passesMinimumScoreFilter
+                        )
                 );
 
 
             const visibleDecisions =
                 lastRawDecisions
+                    .filter(item => item && !isExpiredGuiItem(item))
                     .filter(
                         item =>
                             item &&
@@ -5943,6 +5960,13 @@
             "Ready | Auto Scan starts with the server | waiting for first automatic scan";
         refreshPerformanceStats();
         setInterval(refreshPerformanceStats, 30000);
+
+        // Expired timed decisions must disappear immediately instead of waiting
+        // for the next 10-minute Auto Scan snapshot. This only changes the GUI;
+        // signal-history and outcome/checkpoint tracking remain untouched.
+        setInterval(() => {
+            applyDisplayPreferences();
+        }, 1000);
 
         async function refreshLatestAutoScanResults() {
             try {

@@ -1,7 +1,7 @@
 {
   "name": "market-data-twelve-data",
-  "version": "5.3.3",
-  "description": "Forex Scanner v5.3.3 Research Mode \u2014 Auto GUI sync, 10-pair scans, score 50 research floor, WAIT tracking and +20m price checkpoint.",
+  "version": "5.3.4-6",
+  "description": "Forex Scanner v5.3.4.6 — immutable analysis audit, all-pair NO_TRADE research logging, exact/after-target outcome validation.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
