@@ -24,6 +24,20 @@ const {
 } = require('./analysisAuditLogger');
 
 const {
+    buildResearchMetadata
+} = require('./researchMetadata');
+
+const {
+    logManualAnalysis,
+    updateManualAnalysisForSymbol,
+    getManualAnalysisStats,
+    getManualPendingSymbols,
+    markManualWaitingForPrice
+} = require('./manualAnalysisLogger');
+
+const { buildManualFallbackAnalysis } = require('./manualFallbackAnalysis');
+
+const {
     logScoreDiagnostic,
     getScoreDiagnosticHistory,
     clearScoreDiagnosticHistory
@@ -952,6 +966,12 @@ function getAllSessionPairs() {
 // MODULES
 // ======================================================
 
+const fs =
+    require(
+        'fs'
+    );
+
+
 const path =
     require(
         'path'
@@ -1216,6 +1236,7 @@ async function checkExpiredPaperSignals() {
             const outcomeCandles = getLocalHistory(signal.symbol);
             observePendingSignals(signal.symbol, currentPrice, Date.now(), { candles: outcomeCandles });
             updateAuditOutcomesForSymbol(signal.symbol, currentPrice, Date.now(), { candles: outcomeCandles });
+            updateManualAnalysisForSymbol(signal.symbol, currentPrice, Date.now(), { candles: outcomeCandles, source: 'REST_SHARED' });
 
             resolveSignal(
                 signal.id,
@@ -2110,6 +2131,7 @@ async function runFastRestRecheck() {
                 // Reuse the price we already fetched for Fast Recheck; no extra REST credit.
                 observePendingSignals(symbol, livePrice, Date.now(), { candles: closedCandles });
                 updateAuditOutcomesForSymbol(symbol, livePrice, Date.now(), { candles: closedCandles });
+                updateManualAnalysisForSymbol(symbol, livePrice, Date.now(), { candles: closedCandles, source: priceSource || 'REST_SHARED' });
 
                 const analysis = combinedAnalysis(symbol, closedCandles, livePrice, {
                     userMinScore: watch.userMinScore,
@@ -2317,6 +2339,10 @@ app.get('/api/fast-recheck', (req, res) => {
 // and running the same analysis twice when the Scan button is clicked
 // repeatedly or two clients call /api/scan at the same time.
 let scanInProgress = false;
+// v5.3.4.9 — Manual Analysis uses an independent per-symbol lock.
+// It may run while the background Auto Scanner is active; only duplicate
+// manual scans for the same pair are blocked.
+const manualScanInProgress = new Set();
 const FULL_SCAN_PAIR_LIMIT = Math.max(1, Math.min(PAIRS.length, Number(process.env.FULL_SCAN_PAIR_LIMIT) || 10));
 const SESSION_PREFILTER_POOL_LIMIT = Math.max(FULL_SCAN_PAIR_LIMIT, Math.min(PAIRS.length, Number(process.env.SESSION_PREFILTER_POOL_LIMIT) || PAIRS.length));
 let latestScanSnapshot = null;
@@ -2327,7 +2353,36 @@ let latestScanSnapshot = null;
 const AUTO_SCAN_INTERVAL_MS = Math.max(10 * 60 * 1000, Number(process.env.AUTO_SCAN_INTERVAL_MS) || 10 * 60 * 1000);
 const AUTO_SCAN_STARTUP_DELAY_MS = Math.max(1000, Number(process.env.AUTO_SCAN_STARTUP_DELAY_MS) || 2500);
 let autoScanTimer = null;
-let autoScanEnabled = false;
+const AUTO_SCAN_SETTINGS_FILE = path.join(__dirname, 'runtime-settings.json');
+
+function loadAutoScanPreference() {
+    try {
+        if (!fs.existsSync(AUTO_SCAN_SETTINGS_FILE)) return true;
+        const parsed = JSON.parse(fs.readFileSync(AUTO_SCAN_SETTINGS_FILE, 'utf8'));
+        return parsed.autoScanEnabled !== false;
+    } catch (error) {
+        console.warn('[AUTO SCAN] could not read runtime setting:', error.message);
+        return true;
+    }
+}
+
+function saveAutoScanPreference(enabled) {
+    try {
+        let current = {};
+        if (fs.existsSync(AUTO_SCAN_SETTINGS_FILE)) {
+            try { current = JSON.parse(fs.readFileSync(AUTO_SCAN_SETTINGS_FILE, 'utf8')) || {}; } catch (_) {}
+        }
+        current.autoScanEnabled = Boolean(enabled);
+        current.updatedAt = new Date().toISOString();
+        const tempPath = `${AUTO_SCAN_SETTINGS_FILE}.tmp`;
+        fs.writeFileSync(tempPath, JSON.stringify(current, null, 2));
+        fs.renameSync(tempPath, AUTO_SCAN_SETTINGS_FILE);
+    } catch (error) {
+        console.warn('[AUTO SCAN] could not persist runtime setting:', error.message);
+    }
+}
+
+let autoScanEnabled = loadAutoScanPreference();
 let autoScanQuery = 'minScore=50&showWeak=1';
 let autoScanLastStartedAt = null;
 let autoScanNextAt = null;
@@ -2377,9 +2432,7 @@ function armAutoScanFromRequest(req) {
         if (req.query[key] !== undefined) params.set(key, String(req.query[key]));
     }
     autoScanQuery = params.toString() || 'minScore=50&showWeak=1';
-    if (!autoScanEnabled) console.log('[AUTO SCAN] armed after manual scan | interval:', Math.round(AUTO_SCAN_INTERVAL_MS / 60000), 'min');
-    autoScanEnabled = true;
-    scheduleAutoScan();
+    if (autoScanEnabled) scheduleAutoScan();
 }
 
 
@@ -2695,6 +2748,87 @@ app.get('/api/auto-scan', (req, res) => {
     });
 });
 
+app.post('/api/auto-scan/toggle', express.json(), (req, res) => {
+    const requested = req.body?.enabled;
+    if (typeof requested !== 'boolean') {
+        return res.status(400).json({ status: 'error', error: 'enabled must be boolean' });
+    }
+
+    autoScanEnabled = requested;
+    saveAutoScanPreference(autoScanEnabled);
+
+    if (autoScanEnabled) {
+        console.log('[AUTO SCAN] enabled by user');
+        scheduleAutoScan();
+    } else {
+        if (autoScanTimer) {
+            clearTimeout(autoScanTimer);
+            autoScanTimer = null;
+        }
+        autoScanNextAt = null;
+        console.log('[AUTO SCAN] disabled by user');
+    }
+
+    res.json({
+        status: 'ok',
+        enabled: autoScanEnabled,
+        intervalMs: AUTO_SCAN_INTERVAL_MS,
+        intervalMinutes: AUTO_SCAN_INTERVAL_MS / 60000,
+        lastStartedAt: autoScanLastStartedAt,
+        nextAt: autoScanNextAt
+    });
+});
+
+app.get('/api/manual-analysis/pairs', (req, res) => {
+    const marketPeriod = getActiveMarketPeriod();
+
+    let symbols = Array.isArray(lastDynamicScanPairs)
+        ? lastDynamicScanPairs.filter(symbol => PAIRS.includes(symbol))
+        : [];
+
+    if (symbols.length < 10) {
+        const fallback = getRankedSessionPairs(marketPeriod.key, PAIRS.length)
+            .map(item => ({
+                ...item,
+                historicalPriorityBonus: getHistoricalPairPriorityBonus(item.symbol),
+                priorityScore: Number(item.sessionScore || 0) + getHistoricalPairPriorityBonus(item.symbol)
+            }))
+            .sort((a, b) =>
+                Number(b.priorityScore) - Number(a.priorityScore) ||
+                a.symbol.localeCompare(b.symbol)
+            )
+            .map(item => item.symbol);
+
+        for (const symbol of fallback) {
+            if (!symbols.includes(symbol)) symbols.push(symbol);
+            if (symbols.length >= 10) break;
+        }
+    }
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+        status: 'ok',
+        mode: 'PAPER_ANALYSIS',
+        marketPeriod: { key: marketPeriod.key, label: marketPeriod.label },
+        expirations: [3, 5, 15],
+        recommendedExpiration: getRealtimeStatus().connected ? 5 : 15,
+        recommendationReason: getRealtimeStatus().connected
+            ? 'WebSocket is connected; 3/5/15m remain available.'
+            : 'REST-only mode detected; 15m is the primary research benchmark because entry timing delay is less dominant.',
+        pairs: symbols.slice(0, 10).map((symbol, index) => ({
+            rank: index + 1,
+            symbol,
+            historicalPriorityBonus: getHistoricalPairPriorityBonus(symbol),
+            sessionScore: getSessionPairScore(symbol, marketPeriod.key)
+        }))
+    });
+});
+
+app.get('/api/manual-analysis/stats', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({ status: 'ok', mode: 'MANUAL_PAPER_ANALYSIS', stats: getManualAnalysisStats() });
+});
+
 app.get('/api/latest-scan', (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (!latestScanSnapshot) {
@@ -2718,16 +2852,81 @@ app.get(
             });
         }
 
-        if (scanInProgress) {
-            return res.status(409).json({
-                status: 'busy',
-                message: 'A scan is already in progress. Please wait for it to finish.'
-            });
+        const manualRequestedSymbol = String(req.query.symbol || '').trim();
+        const manualRequestedExpiration = Number(req.query.manualExpiration);
+        const isManualAnalysisRequest = Boolean(
+            manualRequestedSymbol && [3, 5, 15].includes(manualRequestedExpiration)
+        );
+
+        let manualFreshnessPreflight = null;
+        if (isManualAnalysisRequest) {
+            if (manualScanInProgress.has(manualRequestedSymbol)) {
+                return res.status(409).json({
+                    status: 'busy',
+                    message: `Manual analysis for ${manualRequestedSymbol} is already in progress.`
+                });
+            }
+            manualScanInProgress.add(manualRequestedSymbol);
+
+            // v5.3.4.12 — Manual Freshness Preflight.
+            // Reuse fresh local/WS data. If local 1m history is missing or stale,
+            // make one targeted REST refresh before allowing a manual prediction.
+            const freshnessLimitSeconds = Math.max(30, Number(process.env.MANUAL_MAX_DATA_AGE_SECONDS) || 120);
+            const beforePrepared = prepareCandles(getLocalHistory(manualRequestedSymbol));
+            const beforeAge = Number(beforePrepared.newestClosedAgeSeconds);
+            const needsFreshnessRefresh =
+                getLocalHistory(manualRequestedSymbol).length < 60 ||
+                !Number.isFinite(beforeAge) ||
+                beforeAge > freshnessLimitSeconds;
+
+            let refreshAttempted = false;
+            let refreshError = null;
+            if (needsFreshnessRefresh) {
+                refreshAttempted = true;
+                try {
+                    await bootstrapLocalHistory(manualRequestedSymbol, true);
+                } catch (error) {
+                    refreshError = error && error.message ? error.message : String(error);
+                }
+            }
+
+            const afterPrepared = prepareCandles(getLocalHistory(manualRequestedSymbol));
+            const afterAge = Number(afterPrepared.newestClosedAgeSeconds);
+            const historyCount = getLocalHistory(manualRequestedSymbol).length;
+            const freshEnough =
+                historyCount >= 60 &&
+                Number.isFinite(afterAge) &&
+                afterAge <= freshnessLimitSeconds;
+
+            manualFreshnessPreflight = {
+                status: freshEnough ? 'READY' : 'NOT_READY',
+                freshnessLimitSeconds,
+                historyCount,
+                dataAgeSecondsBefore: Number.isFinite(beforeAge) ? beforeAge : null,
+                dataAgeSeconds: Number.isFinite(afterAge) ? afterAge : null,
+                refreshAttempted,
+                refreshError
+            };
+
+            if (!freshEnough) {
+                manualScanInProgress.delete(manualRequestedSymbol);
+                return res.status(503).json({
+                    status: 'data_not_ready',
+                    message: `Manual analysis cannot run: usable market data for ${manualRequestedSymbol} is not available.`,
+                    freshness: manualFreshnessPreflight
+                });
+            }
+        } else {
+            if (scanInProgress) {
+                return res.status(409).json({
+                    status: 'busy',
+                    message: 'A scan is already in progress. Please wait for it to finish.'
+                });
+            }
+            scanInProgress = true;
         }
 
         armAutoScanFromRequest(req);
-
-        scanInProgress = true;
 
         try {
 
@@ -4611,6 +4810,23 @@ app.get(
                     'SKIP' :
                     (waitEntry ? 'WAIT' : 'TRADE');
 
+                // v5.3.4.20: pairSession must exist before audit / WAIT research logging.
+                // Previously it was declared later in the TRADE-only path, which caused
+                // a temporal-dead-zone ReferenceError for WAIT records and prevented
+                // signal-history.json / analysis-audit-history.json from being updated.
+                const pairSession = getPairSession(symbol);
+
+                // v5.3.4.7 research snapshot: diagnostic metadata captured at
+                // analysis time only. This MUST NOT affect scoring/execution.
+                const researchMetadata = buildResearchMetadata({
+                    closedCandles,
+                    entryZone,
+                    currentPrice: livePrice,
+                    signalAge,
+                    candleConfirmation: analysis.candleConfirmation || null,
+                    marketRegime: analysis.marketRegime || null
+                });
+
                 // v5.3.4.6 immutable audit snapshot: persist EVERY analyzed pair,
                 // including WAIT/SKIP/NO_TRADE. This is separate from signal-history.json.
                 try {
@@ -4629,7 +4845,8 @@ app.get(
                         signalStrength,
                         signalAge,
                         pairSession,
-                        primaryStrategy
+                        primaryStrategy,
+                        researchMetadata
                     }, {
                         batchId: analysisBatchId,
                         timezone: 'America/Toronto',
@@ -4642,7 +4859,8 @@ app.get(
                             candleConfirmation: analysis.candleConfirmation || null,
                             marketRegime: analysis.marketRegime || null,
                             primaryStrategy: primaryStrategy || null,
-                            pairSession: pairSession || null
+                            pairSession: pairSession || null,
+                            researchMetadata: researchMetadata || null
                         }
                     });
                 } catch (auditError) {
@@ -4724,6 +4942,7 @@ app.get(
                                     signalCandleCloseMs,
                                     signalAge,
                                     signalStrength,
+                                    researchMetadata,
                                     candleConfirmation: analysis.candleConfirmation || null,
                                     decision: 'WAIT',
                                     entryZone,
@@ -4912,16 +5131,6 @@ app.get(
                             tradePriority
                         ) || 0;
                 }
-
-
-                // ======================================
-                // SESSION
-                // ======================================
-
-                const pairSession =
-                    getPairSession(
-                        symbol
-                    );
 
 
                 // ======================================
@@ -5218,6 +5427,8 @@ app.get(
                             signalAge: signalAge,
 
                             signalStrength: signalStrength,
+
+                            researchMetadata: researchMetadata,
 
                             candleConfirmation: analysis.candleConfirmation || null,
                             decision: 'TRADE',
@@ -5949,7 +6160,75 @@ app.get(
             if (!key) continue;
             finalDecisionMap.set(key, item);
         }
-        const finalDecisions = Array.from(finalDecisionMap.values());
+        const scanGeneratedAt = new Date().toISOString();
+        const finalDecisions = Array.from(finalDecisionMap.values()).map(item => ({
+            ...item,
+            generatedAt: item?.generatedAt || scanGeneratedAt
+        }));
+        let manualPaperRecord = null;
+        let manualPrediction = null;
+        if (isManualAnalysisRequest) {
+            const manualDecision = finalDecisions.find(item => String(item?.symbol || '').toUpperCase() === manualRequestedSymbol.toUpperCase()) || null;
+            const manualTradeResult = results.find(item => String(item?.symbol || '').toUpperCase() === manualRequestedSymbol.toUpperCase()) || null;
+
+            // v5.3.4.14 — Manual ALWAYS PREDICT with real FULL -> PARTIAL/FALLBACK analysis.
+            // Never hard-code UP. If the core scan did not produce usable directional scores,
+            // calculate a deterministic technical fallback from the same local candles.
+            const sharedBeforePrediction = getSharedRestPrice(manualRequestedSymbol);
+            const fallback = buildManualFallbackAnalysis(
+                manualRequestedSymbol,
+                getLocalHistory(manualRequestedSymbol),
+                sharedBeforePrediction?.price
+            );
+            const coreUp = Number(manualDecision?.upScore ?? manualTradeResult?.upScore);
+            const coreDown = Number(manualDecision?.downScore ?? manualTradeResult?.downScore);
+            const coreUsable = Number.isFinite(coreUp) && Number.isFinite(coreDown);
+            const analysisSource = coreUsable ? (manualDecision || manualTradeResult) : fallback;
+            const upScore = Number(analysisSource?.upScore);
+            const downScore = Number(analysisSource?.downScore);
+            if (!analysisSource || !Number.isFinite(upScore) || !Number.isFinite(downScore)) {
+                throw new Error(`Manual analysis could not calculate a directional result for ${manualRequestedSymbol}.`);
+            }
+            let predictionDirection;
+            if (upScore !== downScore) predictionDirection = upScore > downScore ? 'UP' : 'DOWN';
+            else predictionDirection = String(analysisSource.signal || analysisSource.bestDirection || '').toUpperCase();
+            if (!['UP','DOWN'].includes(predictionDirection)) {
+                throw new Error(`Manual analysis tie could not be resolved from market data for ${manualRequestedSymbol}.`);
+            }
+            const predictionScore = predictionDirection === 'UP' ? upScore : downScore;
+            const oppositeScore = predictionDirection === 'UP' ? downScore : upScore;
+            const scoreGap = Math.abs(predictionScore - oppositeScore);
+            const predictionConfidence = scoreGap >= 25 ? 'HIGH' : scoreGap >= 12 ? 'MEDIUM' : scoreGap >= 5 ? 'LOW' : 'VERY_LOW';
+            const normalDecision = manualDecision?.action || manualDecision?.decision || manualTradeResult?.decision || 'SKIP';
+            const analysisQuality = coreUsable ? 'FULL' : (fallback?.analysisQuality || 'FALLBACK');
+            manualPrediction = {
+                direction: predictionDirection, score: predictionScore, oppositeScore,
+                upScore, downScore, scoreGap, confidence: predictionConfidence,
+                normalDecision, analysisQuality,
+                analysis: analysisSource
+            };
+
+            const sharedManualPrice = getSharedRestPrice(manualRequestedSymbol);
+            const scanPrice = Number(manualTradeResult?.livePrice ?? manualTradeResult?.currentPrice ?? sharedManualPrice?.price);
+            manualPaperRecord = logManualAnalysis({
+                symbol: manualRequestedSymbol,
+                direction: predictionDirection,
+                score: Number.isFinite(predictionScore) ? predictionScore : null,
+                oppositeScore: Number.isFinite(oppositeScore) ? oppositeScore : null,
+                upScore: Number.isFinite(upScore) ? upScore : null,
+                downScore: Number.isFinite(downScore) ? downScore : null,
+                scoreGap,
+                predictionConfidence,
+                rawDecision: normalDecision,
+                expirationMinutes: manualRequestedExpiration,
+                scanPrice,
+                scanPriceSource: sharedManualPrice?.source || null,
+                analysisQuality,
+                analysisValid: true,
+                preflightDataAgeSeconds: manualFreshnessPreflight?.dataAgeSeconds,
+                snapshot: { decision: manualDecision || null, result: manualTradeResult || null, effectiveAnalysis: manualPrediction?.analysis || null }
+            });
+        }
         const decisionSummary = finalDecisions.reduce((acc, item) => {
             const key = String(item?.action || item?.decision || 'UNKNOWN').toUpperCase();
             acc[key] = (acc[key] || 0) + 1;
@@ -6001,6 +6280,18 @@ app.get(
             status: 'ok',
 
             mode: 'PAPER_ANALYSIS',
+
+            manualAnalysis: requestedPrioritySymbol ? {
+                requested: true,
+                symbol: requestedPrioritySymbol,
+                freshnessPreflight: manualFreshnessPreflight,
+                expirationMinutes: [3, 5, 15].includes(Number(req.query.manualExpiration))
+                    ? Number(req.query.manualExpiration)
+                    : null,
+                note: 'ALWAYS PREDICT research mode: prediction is always UP/DOWN; normal Entry/Execution decision is preserved separately and core scoring/entry logic are unchanged.',
+                prediction: manualPrediction,
+                paperRecord: manualPaperRecord
+            } : null,
 
             scanned: scanStats.pairsAttempted,
 
@@ -6099,8 +6390,7 @@ app.get(
             // TIME
             // ==========================================
 
-            generatedAt: new Date()
-                .toISOString(),
+            generatedAt: scanGeneratedAt,
 
 
             montrealTime: getTimeInZone(
@@ -6128,7 +6418,11 @@ app.get(
         res.json(scanResponsePayload);
 
         } finally {
-            scanInProgress = false;
+            if (isManualAnalysisRequest) {
+                manualScanInProgress.delete(manualRequestedSymbol);
+            } else {
+                scanInProgress = false;
+            }
 
             // v4.14.8: do not wait for the next 30s interval boundary.
             // A full scan may itself occupy the timer window, so kick one
@@ -7104,6 +7398,7 @@ async function samplePendingSignalOutcomes() {
                 const outcomeCandles = getLocalHistory(symbol);
                 observePendingSignals(symbol, price, Date.now(), { candles: outcomeCandles });
                 updateAuditOutcomesForSymbol(symbol, price, Date.now(), { candles: outcomeCandles });
+                updateManualAnalysisForSymbol(symbol, price, Date.now(), { candles: outcomeCandles, source });
                 console.log('[OUTCOME SAMPLE]', symbol, '| price:', price, '| source:', source);
             } catch (error) {
                 console.warn('[OUTCOME SAMPLE ERROR]', symbol, error.message);
@@ -7119,6 +7414,33 @@ setInterval(() => {
         console.error('[OUTCOME ENGINE]', error.message)
     );
 }, OUTCOME_SAMPLE_INTERVAL_MS);
+
+// ======================================================
+// v5.3.4.14 MANUAL OUTCOME CHECKER
+// ======================================================
+const MANUAL_OUTCOME_CHECK_INTERVAL_MS = Math.max(5000, Number(process.env.MANUAL_OUTCOME_CHECK_INTERVAL_MS) || 10000);
+let manualOutcomeCheckerRunning = false;
+async function checkManualPaperOutcomes() {
+    if (manualOutcomeCheckerRunning) return;
+    manualOutcomeCheckerRunning = true;
+    try {
+        markManualWaitingForPrice(Date.now());
+        for (const symbol of getManualPendingSymbols()) {
+            let live = getLivePrice(symbol);
+            let price = live && live.fresh ? Number(live.price) : NaN;
+            let source = 'REALTIME';
+            if (!Number.isFinite(price)) {
+                // Targeted refresh makes Manual completion independent from WS and Auto Scanner.
+                try { await bootstrapLocalHistory(symbol, true); } catch (e) { console.warn('[MANUAL OUTCOME REFRESH]', symbol, e.message); }
+                const shared = getSharedRestPrice(symbol);
+                price = Number(shared.price); source = shared.source || 'REST_SHARED';
+            }
+            if (!Number.isFinite(price)) continue;
+            updateManualAnalysisForSymbol(symbol, price, Date.now(), { candles: getLocalHistory(symbol), source });
+        }
+    } finally { manualOutcomeCheckerRunning = false; }
+}
+setInterval(() => checkManualPaperOutcomes().catch(e => console.error('[MANUAL OUTCOME CHECKER]', e.message)), MANUAL_OUTCOME_CHECK_INTERVAL_MS);
 
 // ======================================================
 // SIGNAL CHECKER
@@ -7458,19 +7780,23 @@ app.listen(
         // is delayed briefly so the listener and realtime symbol setup are
         // fully ready. Session-off guards inside /api/scan and the shared
         // REST updater remain authoritative.
-        autoScanEnabled = true;
-        autoScanNextAt = new Date(Date.now() + AUTO_SCAN_STARTUP_DELAY_MS).toISOString();
-        console.log(
-            '[AUTO SCAN] enabled on server startup | first scan in',
-            Math.round(AUTO_SCAN_STARTUP_DELAY_MS / 1000),
-            'sec | interval:',
-            Math.round(AUTO_SCAN_INTERVAL_MS / 60000),
-            'min'
-        );
+        if (autoScanEnabled) {
+            autoScanNextAt = new Date(Date.now() + AUTO_SCAN_STARTUP_DELAY_MS).toISOString();
+            console.log(
+                '[AUTO SCAN] enabled on server startup | first scan in',
+                Math.round(AUTO_SCAN_STARTUP_DELAY_MS / 1000),
+                'sec | interval:',
+                Math.round(AUTO_SCAN_INTERVAL_MS / 60000),
+                'min'
+            );
 
-        setTimeout(() => {
-            executeAutoScan('startup');
-        }, AUTO_SCAN_STARTUP_DELAY_MS);
+            setTimeout(() => {
+                executeAutoScan('startup');
+            }, AUTO_SCAN_STARTUP_DELAY_MS);
+        } else {
+            autoScanNextAt = null;
+            console.log('[AUTO SCAN] disabled on server startup by saved user preference');
+        }
 
 
         console.log(

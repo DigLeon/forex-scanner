@@ -531,6 +531,13 @@ function logSignal(
         );
 
 
+    const researchMetadata =
+        result.researchMetadata &&
+        typeof result.researchMetadata === 'object'
+            ? result.researchMetadata
+            : null;
+
+
     const researchHorizons =
         Array.from(new Set([
             ...OUTCOME_HORIZONS_MINUTES,
@@ -668,6 +675,31 @@ function logSignal(
         dataAgeSeconds,
 
         dataAgeStatus,
+
+
+        // ==================================================
+        // RESEARCH METADATA SNAPSHOT
+        // Diagnostic only; never feeds back into the signal.
+        // ==================================================
+
+        researchMetadata,
+
+        rsi1m: researchMetadata ? researchMetadata.rsi1m : null,
+        rsi5m: researchMetadata ? researchMetadata.rsi5m : null,
+        rsi15m: researchMetadata ? researchMetadata.rsi15m : null,
+
+        atr1m: researchMetadata ? researchMetadata.atr1m : null,
+        atr1mPct: researchMetadata ? researchMetadata.atr1mPct : null,
+        atr5m: researchMetadata ? researchMetadata.atr5m : null,
+        atr5mPct: researchMetadata ? researchMetadata.atr5mPct : null,
+        atr15m: researchMetadata ? researchMetadata.atr15m : null,
+        atr15mPct: researchMetadata ? researchMetadata.atr15mPct : null,
+
+        macd5mLine: researchMetadata ? researchMetadata.macd5mLine : null,
+        macd5mSignal: researchMetadata ? researchMetadata.macd5mSignal : null,
+        macd5mHistogram: researchMetadata ? researchMetadata.macd5mHistogram : null,
+
+        distanceToBestEntryAtr: researchMetadata ? researchMetadata.distanceToBestEntryAtr : null,
 
 
         // ==================================================
@@ -994,7 +1026,7 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
             record[statusKey] = 'COMPLETED';
             record[approximateKey] = !exact;
             record[sourceKey] = exact
-                ? 'CLOSED_1M_AT_OR_BEFORE_TARGET'
+                ? 'CLOSED_1M_AT_OR_AFTER_TARGET'
                 : 'LIVE_SAMPLE';
 
             changed = true;
@@ -1036,7 +1068,7 @@ function observePendingSignals(symbol, currentPrice, observedAtMs = Date.now(), 
                 signedMoveBps: +(record.signal === 'UP' ? outcomeRawBps : -outcomeRawBps).toFixed(3),
                 mfeBps: +Number(t.mfeBps || 0).toFixed(3), maeBps: +Number(t.maeBps || 0).toFixed(3),
                 approximate: !exact,
-                priceSource: exact ? 'CLOSED_1M_AT_OR_BEFORE_TARGET' : 'LIVE_SAMPLE',
+                priceSource: exact ? 'CLOSED_1M_AT_OR_AFTER_TARGET' : 'LIVE_SAMPLE',
                 targetDeltaMs: exact ? exact.closeMs - targetMs : atMs - targetMs,
                 targetTime: new Date(targetMs).toISOString(),
                 observedTime: new Date(outcomeAtMs).toISOString(),
@@ -1166,7 +1198,7 @@ function resolveSignal(
     record.resultObservedAt = exactExpiry
         ? new Date(exactExpiry.closeMs).toISOString()
         : record.checkedAt;
-    record.resultPriceSource = exactExpiry ? 'CLOSED_1M_AT_OR_BEFORE_EXPIRY' : 'LIVE_SAMPLE';
+    record.resultPriceSource = exactExpiry ? 'CLOSED_1M_AT_OR_AFTER_EXPIRY' : 'LIVE_SAMPLE';
     record.resultApproximate = !exactExpiry;
     record.resultTargetDeltaMs = exactExpiry && Number.isFinite(Number(record.expiryAtMs))
         ? exactExpiry.closeMs - Number(record.expiryAtMs)
@@ -1278,6 +1310,31 @@ function summarizeSignalSubset(records) {
         h.winRate = horizonDecided ? Number((h.wins / horizonDecided * 100).toFixed(1)) : 0;
     });
 
+    const expirationGroups = {};
+    for (const item of completed) {
+        const minutes = Number(item.expirationMinutes);
+        if (!Number.isFinite(minutes) || minutes <= 0) continue;
+        const key = String(minutes);
+        if (!expirationGroups[key]) {
+            expirationGroups[key] = { minutes, total: 0, wins: 0, losses: 0, flat: 0, winRate: 0 };
+        }
+        const group = expirationGroups[key];
+        group.total++;
+        if (item.result === 'WIN') group.wins++;
+        else if (item.result === 'LOSS') group.losses++;
+        else if (item.result === 'FLAT') group.flat++;
+    }
+
+    const byExpiration = Object.values(expirationGroups)
+        .sort((a, b) => a.minutes - b.minutes)
+        .map(group => {
+            const decided = group.wins + group.losses;
+            return {
+                ...group,
+                winRate: decided ? Number((group.wins / decided * 100).toFixed(1)) : 0
+            };
+        });
+
     const tracked = records.filter(x => x.outcomeTracking && Number(x.outcomeTracking.samples) > 0);
     const avgMfeBps = tracked.length
         ? Number((tracked.reduce((a, x) => a + Number(x.outcomeTracking.mfeBps || 0), 0) / tracked.length).toFixed(2))
@@ -1294,6 +1351,7 @@ function summarizeSignalSubset(records) {
         losses,
         draws,
         winRate: decided ? Number((wins / decided * 100).toFixed(1)) : 0,
+        byExpiration,
         horizonStats,
         outcomeTracking: {
             tracked: tracked.length,

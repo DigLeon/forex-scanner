@@ -1,7 +1,7 @@
 {
   "name": "market-data-twelve-data",
-  "version": "5.3.4-6",
-  "description": "Forex Scanner v5.3.4.6 — immutable analysis audit, all-pair NO_TRADE research logging, exact/after-target outcome validation.",
+  "version": "5.3.4-20",
+  "description": "Forex Scanner v5.3.4.16 \u2014 Manual 15m benchmark, delay-bucket stats, MFE/MAE path tracking, REST-only recommendation, Auto Scan persistence fix.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

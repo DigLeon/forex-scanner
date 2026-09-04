@@ -817,6 +817,7 @@
                 minmax(95px,.85fr)
                 minmax(75px,.65fr)
                 minmax(105px,.9fr)
+                minmax(105px,.9fr)
                 minmax(145px,1.2fr)
                 minmax(190px,1.7fr)
                 80px;
@@ -902,6 +903,12 @@
         .decision-expiration {
             color:#c084fc;
             font-weight:900;
+            white-space:nowrap;
+        }
+
+        .decision-generated {
+            color:#7dd3fc;
+            font-weight:850;
             white-space:nowrap;
         }
 
@@ -1004,6 +1011,7 @@
                 grid-template-columns:100px 85px 90px 75px 110px 1fr;
             }
 
+            .decision-generated,
             .decision-strategy { display:none; }
         }
 
@@ -1027,6 +1035,7 @@
 
             .decision-direction,
             .decision-expiration,
+            .decision-generated,
             .decision-strategy { display:none; }
 
             .decision-score { text-align:right; }
@@ -1150,6 +1159,86 @@
         .telegram-test-button:hover{background:#0c4a6e;border-color:#38bdf8}
         .telegram-test-button:disabled{opacity:.55;cursor:not-allowed}
 
+
+        /* ======================================================
+           TOP TABS + MANUAL ANALYSIS
+        ====================================================== */
+        .app-tabs { display:flex; gap:8px; padding:12px 24px 0; background:#0f172a; }
+        .app-tab { padding:10px 16px; border:1px solid #334155; border-bottom:none; border-radius:8px 8px 0 0; background:#111827; color:#94a3b8; font-weight:900; cursor:pointer; }
+        .app-tab.active { background:#1e293b; color:#f8fafc; }
+        .auto-toggle-wrap { display:flex; align-items:center; gap:10px; margin-left:10px; }
+        .auto-toggle-label { color:#cbd5e1; font-size:12px; font-weight:900; }
+        .auto-toggle { position:relative; width:48px; height:26px; border:0; border-radius:999px; background:#475569; cursor:pointer; padding:0; transition:.2s; }
+        .auto-toggle::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:.2s; }
+        .auto-toggle.on { background:#16a34a; }
+        .auto-toggle.on::after { transform:translateX(22px); }
+        .auto-toggle:disabled { opacity:.6; cursor:wait; }
+        .manual-analysis-panel { display:none; padding:18px 24px 30px; background:#0f172a; }
+        .manual-analysis-panel.active { display:block; }
+        .manual-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:14px; }
+        .manual-title { font-size:18px; font-weight:950; color:#f8fafc; }
+        .manual-subtitle { margin-top:4px; font-size:12px; color:#94a3b8; }
+        .manual-grid { display:grid; gap:8px; }
+        .manual-row { display:grid; grid-template-columns:54px 120px 250px 100px 1fr; gap:12px; align-items:center; padding:12px; background:#111827; border:1px solid #263244; border-radius:9px; }
+        .manual-rank { color:#64748b; font-weight:900; }
+        .manual-pair { color:#f8fafc; font-size:15px; font-weight:950; }
+        .manual-expirations { display:flex; gap:6px; }
+        .manual-exp-btn, .manual-scan-btn { border:1px solid #475569; border-radius:7px; background:#0f172a; color:#cbd5e1; font-weight:900; cursor:pointer; }
+        .manual-exp-btn { min-width:54px; padding:7px 9px; }
+        .manual-exp-btn.active { border-color:#60a5fa; background:#1d4ed8; color:#fff; }
+        .manual-scan-btn { padding:8px 13px; border-color:#2563eb; background:#2563eb; color:#fff; }
+        .manual-scan-btn:disabled { opacity:.55; cursor:not-allowed; }
+        .manual-result { min-width:0; color:#cbd5e1; font-size:12px; line-height:1.45; }
+        .manual-result strong { color:#f8fafc; }
+        .manual-result .up { color:#4ade80; font-weight:900; }
+        .manual-result .down { color:#f87171; font-weight:900; }
+        .manual-research-badge { padding:5px 9px; border:1px solid rgba(251,191,36,.35); border-radius:20px; background:rgba(251,191,36,.10); color:#fbbf24; font-size:11px; font-weight:900; white-space:nowrap; }
+        .manual-stats { display:grid; grid-template-columns:repeat(6,minmax(90px,1fr)); gap:8px; margin:10px 0 14px; }
+        .manual-stat { background:#111827; border:1px solid #263244; border-radius:9px; padding:10px 12px; }
+        .manual-stat-label { color:#94a3b8; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+        .manual-stat-value { margin-top:3px; color:#f8fafc; font-size:18px; font-weight:950; }
+        .manual-timer { margin-top:7px; color:#60a5fa; font-weight:950; font-size:18px; letter-spacing:.02em; }
+        .manual-timer.live { color:#fbbf24; }
+        .manual-timer.done { color:#4ade80; }
+        .manual-horizon-stats { color:#94a3b8; font-size:11px; margin-bottom:10px; }
+        @media(max-width:900px){ .manual-stats{grid-template-columns:repeat(3,1fr)} }
+        @media(max-width:900px){ .manual-row{grid-template-columns:42px 90px 1fr}.manual-scan-btn{grid-column:1 / 2}.manual-result{grid-column:2 / -1}.manual-expirations{justify-content:flex-start} }
+
+
+        .paper-expiration-panel {
+            margin: 0 4px 18px;
+            padding: 12px 14px;
+            border: 1px solid #243247;
+            border-radius: 10px;
+            background: #111a2a;
+        }
+        .paper-expiration-title {
+            margin-bottom: 9px;
+            color: #9fb4d1;
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+        }
+        .paper-expiration-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .paper-expiration-chip {
+            min-width: 132px;
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 8px 10px;
+            border: 1px solid #31435c;
+            border-radius: 8px;
+            background: #0c1422;
+        }
+        .paper-expiration-chip strong { font-size:13px; }
+        .paper-expiration-chip span { font-size:12px; color:#cbd5e1; }
+        .paper-expiration-empty { color:#64748b; font-size:12px; }
+
     </style>
 
 </head>
@@ -1187,6 +1276,31 @@
     </div>
 
 
+    <div class="app-tabs">
+        <button id="autoScannerTab" class="app-tab active" type="button">AUTO SCANNER</button>
+        <button id="manualAnalysisTab" class="app-tab" type="button">MANUAL ANALYSIS</button>
+        <div class="auto-toggle-wrap">
+            <span id="autoScanToggleLabel" class="auto-toggle-label">AUTO SCAN</span>
+            <button id="autoScanToggle" class="auto-toggle" type="button" role="switch" aria-checked="false" title="Enable or disable automatic scanning"></button>
+        </div>
+    </div>
+
+    <section id="manualAnalysisPanel" class="manual-analysis-panel">
+        <div class="manual-head">
+            <div>
+                <div class="manual-title">MANUAL ANALYSIS</div>
+                <div class="manual-subtitle">10 current priority pairs · ALWAYS PREDICT UP/DOWN · choose 3 / 5 / 15 minute research horizon · PAPER ANALYSIS only</div>
+            </div>
+            <div class="manual-research-badge">RESEARCH MODE</div>
+        </div>
+        <div id="manualPairsStatus" class="manual-subtitle" style="margin-bottom:10px">Loading priority pairs...</div>
+        <div id="manualStats" class="manual-stats"></div>
+        <div id="manualHorizonStats" class="manual-horizon-stats"></div>
+        <div id="manualDelayStats" class="manual-horizon-stats"></div>
+        <div id="manualPairsGrid" class="manual-grid"></div>
+    </section>
+
+
     <div class="scanner">
 
         <button id="startScanner">
@@ -1199,7 +1313,7 @@
         </button>
 
         <div class="auto-scanner-badge">
-            ● AUTO SCAN: starts after first SCAN NOW · 10 min
+            ● AUTO SCAN: loading status...
         </div>
 
         <div id="scannerStatus">
@@ -1306,6 +1420,13 @@
         <div class="summary-card"><span id="readyConversion">-</span><small>GET READY → TRADE</small></div>
     </div>
 
+    <div class="paper-expiration-panel" id="paperExpirationPanel">
+        <div class="paper-expiration-title">Paper Win Rate by Expiration</div>
+        <div class="paper-expiration-grid" id="paperExpirationStats">
+            <span class="paper-expiration-empty">No completed paper results yet</span>
+        </div>
+    </div>
+
     <!-- ======================================================
          CURRENT MARKET SESSION
     ====================================================== -->
@@ -1399,6 +1520,7 @@
             <div class="decision-header-cell"><strong>Direction</strong>Market bias</div>
             <div class="decision-header-cell"><strong>Score</strong>0–100</div>
             <div class="decision-header-cell"><strong>Expiration</strong>Valid until</div>
+            <div class="decision-header-cell"><strong>Signal Time</strong>Generated at</div>
             <div class="decision-header-cell"><strong>Strategy</strong>Main setup</div>
             <div class="decision-header-cell"><strong>Reason / Context</strong>Why it is shown</div>
             <div class="decision-header-cell"><strong>Details</strong>More info</div>
@@ -1419,6 +1541,219 @@
                 "startScanner"
             );
 
+
+        const autoScannerTab = document.getElementById("autoScannerTab");
+        const autoScanToggle = document.getElementById("autoScanToggle");
+        const autoScanToggleLabel = document.getElementById("autoScanToggleLabel");
+        const manualAnalysisTab = document.getElementById("manualAnalysisTab");
+        const manualAnalysisPanel = document.getElementById("manualAnalysisPanel");
+        const manualPairsGrid = document.getElementById("manualPairsGrid");
+        const manualPairsStatus = document.getElementById("manualPairsStatus");
+        const manualStats = document.getElementById("manualStats");
+        const manualHorizonStats = document.getElementById("manualHorizonStats");
+        const manualDelayStats = document.getElementById("manualDelayStats");
+        const autoModeSections = [
+            document.querySelector(".scanner"),
+            document.querySelector(".score-equalizer"),
+            document.querySelector(".decision-summary"),
+            document.getElementById("marketSessionPanel"),
+            document.querySelector(".scanner-table"),
+            document.querySelector(".decisions-panel")
+        ].filter(Boolean);
+        let manualPairsLoaded = false;
+        const manualSelectedExpiration = new Map();
+        const manualTimers = new Map();
+        let manualStatsTimer = null;
+
+        function setAppTab(mode) {
+            const manual = mode === "manual";
+            autoScannerTab.classList.toggle("active", !manual);
+            manualAnalysisTab.classList.toggle("active", manual);
+            manualAnalysisPanel.classList.toggle("active", manual);
+            autoModeSections.forEach(section => section.style.display = manual ? "none" : "");
+            if (manual && !manualPairsLoaded) loadManualPairs();
+        }
+
+        function formatManualCountdown(ms) {
+            const total = Math.max(0, Math.ceil(ms / 1000));
+            const minutes = Math.floor(total / 60);
+            const seconds = total % 60;
+            return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+        }
+
+        function startManualPaperTimer(row, record) {
+            if (!record || !row) return;
+            const result = row.querySelector(".manual-result");
+            const id = record.id;
+            if (manualTimers.has(id)) clearInterval(manualTimers.get(id));
+            const update = () => {
+                const now = Date.now();
+                const startMs = Number(record.scheduledStartAtMs || Date.parse(record.scheduledStartAt));
+                const expiryMs = Number(record.expiryAtMs || Date.parse(record.expiryAt));
+                let timerHtml = "";
+                if (Number.isFinite(startMs) && now < startMs) {
+                    timerHtml = `<div class="manual-timer">PAPER START in ${formatManualCountdown(startMs-now)} · next 1m boundary</div>`;
+                } else if (Number.isFinite(expiryMs) && now < expiryMs) {
+                    timerHtml = `<div class="manual-timer live">PAPER ACTIVE · result check in ${formatManualCountdown(expiryMs-now)}</div>`;
+                } else {
+                    timerHtml = `<div class="manual-timer done">Paper horizon reached · waiting for result update</div>`;
+                }
+                const old = result.querySelector(".manual-timer");
+                if (old) old.outerHTML = timerHtml; else result.insertAdjacentHTML("beforeend", timerHtml);
+            };
+            update();
+            const handle = setInterval(update, 1000);
+            manualTimers.set(id, handle);
+        }
+
+        function syncManualRowsFromStats(stats) {
+            const latest = Array.isArray(stats?.latest) ? stats.latest : [];
+            manualPairsGrid.querySelectorAll(".manual-row").forEach(row => {
+                const symbol = row.getAttribute("data-symbol");
+                const record = latest.find(x => x.symbol === symbol);
+                if (!record) return;
+                if (record.status === "COMPLETED") {
+                    const result = row.querySelector(".manual-result");
+                    const timer = result?.querySelector(".manual-timer");
+                    if (timer) {
+                        const delay = record.resultDeltaSeconds == null ? "—" : `${record.resultDeltaSeconds}s`;
+                        const mfe = record.maxFavorableMove == null ? "—" : record.maxFavorableMove;
+                        const mae = record.maxAdverseMove == null ? "—" : record.maxAdverseMove;
+                        timer.outerHTML = `<div class="manual-timer done">RESULT: ${escapeHtml(record.result || "NO_RESULT")} · ${record.expirationMinutes}m · end delay ${escapeHtml(delay)} · MFE ${escapeHtml(String(mfe))} · MAE ${escapeHtml(String(mae))}</div>`;
+                    }
+                }
+            });
+        }
+
+        function renderManualStats(stats) {
+            if (!stats) return;
+            const winRate = stats.winRate == null ? "—" : `${stats.winRate}%`;
+            manualStats.innerHTML = [
+                ["Recorded", stats.total ?? 0], ["WIN", stats.wins ?? 0], ["LOSS", stats.losses ?? 0],
+                ["FLAT", stats.flat ?? 0], ["Pending", (stats.waiting ?? 0) + (stats.pending ?? 0)], ["Win rate", winRate]
+            ].map(([label,value]) => `<div class="manual-stat"><div class="manual-stat-label">${label}</div><div class="manual-stat-value">${value}</div></div>`).join("");
+            const byExp = Array.isArray(stats.byExpiration) ? stats.byExpiration : [];
+            const benchmark = stats.benchmark15m || {};
+            manualHorizonStats.textContent = `15m BENCHMARK: ${benchmark.wins ?? 0}W / ${benchmark.losses ?? 0}L / ${benchmark.flat ?? 0}F${benchmark.winRate == null ? "" : ` · ${benchmark.winRate}%`}   ||   ` +
+                byExp.map(x => `${x.minutes}m: ${x.wins}W / ${x.losses}L / ${x.flat}F${x.winRate == null ? "" : ` · ${x.winRate}%`}`).join("   |   ") +
+                (Array.isArray(stats.byAnalysisQuality) && stats.byAnalysisQuality.length ? `   ||   Analysis: ${stats.byAnalysisQuality.map(x => `${x.quality}: ${x.wins}W/${x.losses}L${x.winRate == null ? '' : ` · ${x.winRate}%`}`).join(' | ')}` : '');
+            manualDelayStats.textContent = (Array.isArray(stats.byDelayBucket) && stats.byDelayBucket.length ? `Entry delay: ${stats.byDelayBucket.map(x => `${x.bucket}: ${x.wins}W/${x.losses}L${x.winRate == null ? '' : ` · ${x.winRate}%`}`).join(' | ')}` : '') +
+                (Array.isArray(stats.byDataQuality) && stats.byDataQuality.length ? `   ||   Data quality: ${stats.byDataQuality.map(x => `${x.quality}: ${x.wins}W/${x.losses}L${x.winRate == null ? '' : ` · ${x.winRate}%`}`).join(' | ')}` : '');
+            syncManualRowsFromStats(stats);
+        }
+
+        async function loadManualStats() {
+            try {
+                const response = await fetch('/api/manual-analysis/stats', {cache:'no-store'});
+                const data = await response.json();
+                if (response.ok && data.status === 'ok') renderManualStats(data.stats);
+            } catch (_) {}
+        }
+
+        function manualValue(value) {
+            return value === null || value === undefined || value === "" ? "—" : value;
+        }
+
+        function findManualDecision(data, symbol) {
+            const decisions = Array.isArray(data?.decisions) ? data.decisions : [];
+            return decisions.find(item => String(item?.symbol || "").toUpperCase() === String(symbol).toUpperCase()) || null;
+        }
+
+        function renderManualResult(item, expiration, prediction = null) {
+            if (!item && !prediction) return `<span>No analysis row returned for this pair.</span>`;
+            const direction = String(prediction?.direction || item?.signal || item?.bestDirection || "UP").toUpperCase();
+            const cls = direction === "UP" ? "up" : direction === "DOWN" ? "down" : "";
+            const originalItem = item || {};
+            const effective = prediction?.analysis || originalItem;
+            item = effective;
+            const metadata = item?.researchMetadata || {};
+            const rsi1 = item?.rsi1m ?? metadata.rsi1m;
+            const rsi5 = item?.rsi5m ?? metadata.rsi5m;
+            const rsi15 = item?.rsi15m ?? metadata.rsi15m;
+            const normalDecision = prediction?.normalDecision || originalItem?.action || originalItem?.decision || "ANALYZED";
+            const predictionScore = prediction?.score ?? item?.score;
+            const oppositeScore = prediction?.oppositeScore;
+            const confidence = prediction?.confidence || "—";
+            const analysisQuality = prediction?.analysisQuality || "FULL";
+            return `
+                <strong>ALWAYS PREDICT</strong> ·
+                <span class="${cls}">${escapeHtml(direction)}</span> ·
+                Score <strong>${manualValue(predictionScore)}</strong>${oppositeScore != null ? ` / ${manualValue(oppositeScore)}` : ""} ·
+                Confidence <strong>${escapeHtml(confidence)}</strong> · Analysis <strong>${escapeHtml(analysisQuality)}</strong> ·
+                Horizon <strong>${expiration}m</strong><br>
+                Normal engine: <strong>${escapeHtml(manualValue(normalDecision))}</strong> ·
+                Context ${escapeHtml(manualValue(item?.context))} · Setup ${escapeHtml(manualValue(item?.setup))} · Entry ${escapeHtml(manualValue(item?.entry))} · Regime ${escapeHtml(manualValue(item?.marketRegime))}
+                ${rsi1 != null || rsi5 != null || rsi15 != null ? `<br>RSI: 1m ${manualValue(rsi1)} · 5m ${manualValue(rsi5)} · 15m ${manualValue(rsi15)}` : ""}
+            `;
+        }
+
+        async function runManualAnalysis(symbol, row) {
+            const expiration = manualSelectedExpiration.get(symbol) || 5;
+            const button = row.querySelector(".manual-scan-btn");
+            const result = row.querySelector(".manual-result");
+            button.disabled = true;
+            result.textContent = `Scanning ${symbol} for ${expiration}m research horizon...`;
+            try {
+                const response = await fetch(`/api/scan?symbol=${encodeURIComponent(symbol)}&minScore=50&showWeak=1&manualExpiration=${expiration}`, {cache:"no-store"});
+                const data = await response.json();
+                if (!response.ok || data.status !== "ok") throw new Error(data.error || data.message || `HTTP ${response.status}`);
+                const prediction = data?.manualAnalysis?.prediction || null;
+                result.innerHTML = renderManualResult(findManualDecision(data, symbol), expiration, prediction);
+                const paperRecord = data?.manualAnalysis?.paperRecord || null;
+                if (paperRecord) startManualPaperTimer(row, paperRecord);
+                await loadManualStats();
+            } catch (error) {
+                result.textContent = `Error: ${error.message}`;
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function renderManualPairs(pairs, recommendedExpiration = 15) {
+            const recommended = [3,5,15].includes(Number(recommendedExpiration)) ? Number(recommendedExpiration) : 15;
+            manualPairsGrid.innerHTML = pairs.map(pair => {
+                manualSelectedExpiration.set(pair.symbol, manualSelectedExpiration.get(pair.symbol) || recommended);
+                return `
+                    <div class="manual-row" data-symbol="${escapeHtml(pair.symbol)}">
+                        <div class="manual-rank">#${pair.rank}</div>
+                        <div class="manual-pair">${escapeHtml(pair.symbol)}</div>
+                        <div class="manual-expirations">
+                            ${[3,5,15].map(exp => `<button type="button" class="manual-exp-btn ${exp===recommended?'active':''}" data-exp="${exp}">${exp} min</button>`).join('')}
+                        </div>
+                        <button type="button" class="manual-scan-btn">SCAN</button>
+                        <div class="manual-result">Choose expiration and press SCAN.</div>
+                    </div>`;
+            }).join("");
+
+            manualPairsGrid.querySelectorAll(".manual-row").forEach(row => {
+                const symbol = row.getAttribute("data-symbol");
+                row.querySelectorAll(".manual-exp-btn").forEach(btn => btn.addEventListener("click", () => {
+                    row.querySelectorAll(".manual-exp-btn").forEach(x => x.classList.remove("active"));
+                    btn.classList.add("active");
+                    manualSelectedExpiration.set(symbol, Number(btn.getAttribute("data-exp")));
+                }));
+                row.querySelector(".manual-scan-btn").addEventListener("click", () => runManualAnalysis(symbol, row));
+            });
+        }
+
+        async function loadManualPairs() {
+            manualPairsStatus.textContent = "Loading current priority pairs...";
+            try {
+                const response = await fetch('/api/manual-analysis/pairs', {cache:'no-store'});
+                const data = await response.json();
+                if (!response.ok || data.status !== 'ok') throw new Error(data.error || data.message || `HTTP ${response.status}`);
+                renderManualPairs(Array.isArray(data.pairs) ? data.pairs : [], data.recommendedExpiration);
+                manualPairsStatus.textContent = `${data.marketPeriod?.label || 'Current session'} · ${data.pairs?.length || 0} priority pairs · Recommended: ${data.recommendedExpiration || 15}m${data.recommendationReason ? ` · ${data.recommendationReason}` : ''}`;
+                manualPairsLoaded = true;
+                await loadManualStats();
+                if (!manualStatsTimer) manualStatsTimer = setInterval(loadManualStats, 5000);
+            } catch (error) {
+                manualPairsStatus.textContent = `Could not load priority pairs: ${error.message}`;
+            }
+        }
+
+        autoScannerTab.addEventListener("click", () => setAppTab("auto"));
+        manualAnalysisTab.addEventListener("click", () => setAppTab("manual"));
 
         const testTelegramButton =
             document.getElementById(
@@ -4630,6 +4965,15 @@
                     </div>
 
                     <div class="decision-details-card">
+                        <strong>Signal Generation Time</strong>
+                        ${
+                            (item.generatedAt || item.signalGeneratedAt || item.createdAt)
+                                ? escapeHtml(formatClockTimeMontreal(item.generatedAt || item.signalGeneratedAt || item.createdAt) + " Montreal")
+                                : "-"
+                        }
+                    </div>
+
+                    <div class="decision-details-card">
                         <strong>Strategy</strong>
                         ${escapeHtml(getDecisionStrategy(item))}
                     </div>
@@ -4720,8 +5064,28 @@
                 const perf = await perfRes.json();
                 const wr = document.getElementById('paperWinRate');
                 const conv = document.getElementById('readyConversion');
+                const expirationStats = document.getElementById('paperExpirationStats');
                 if (wr) wr.textContent = signalStats?.stats?.completed ? `${signalStats.stats.winRate}%` : '-';
                 if (conv) conv.textContent = perf?.getReady?.total ? `${perf.getReady.conversionToTradePct}%` : '-';
+
+                if (expirationStats) {
+                    const rows = Array.isArray(signalStats?.stats?.byExpiration)
+                        ? signalStats.stats.byExpiration
+                        : [];
+
+                    expirationStats.innerHTML = rows.length
+                        ? rows.map(row => {
+                            const minutes = Number(row.minutes);
+                            const wins = Number(row.wins || 0);
+                            const losses = Number(row.losses || 0);
+                            const flat = Number(row.flat || 0);
+                            const decided = wins + losses;
+                            const rate = decided > 0 ? `${Number(row.winRate || 0).toFixed(1)}%` : '-';
+                            return `<div class="paper-expiration-chip" title="${wins} WIN / ${losses} LOSS / ${flat} FLAT">` +
+                                `<strong>${minutes}m</strong><span>${rate} · ${wins}W/${losses}L${flat ? `/${flat}F` : ''}</span></div>`;
+                        }).join('')
+                        : '<span class="paper-expiration-empty">No completed paper results yet</span>';
+                }
             } catch (_) {}
         }
 
@@ -4826,6 +5190,13 @@
                                 :
                                 "—";
 
+                        const signalGeneratedAt =
+                            item.generatedAt || item.signalGeneratedAt || item.createdAt || null;
+
+                        const signalGeneratedTime = signalGeneratedAt
+                            ? formatClockTimeMontreal(signalGeneratedAt)
+                            : "—";
+
 
                         return `
                             <div class="decision-item decision-${escapeHtml(String(item.action || "WAIT").toLowerCase().replaceAll(" ", "-"))}">
@@ -4851,6 +5222,10 @@
 
                                 <div class="decision-expiration">
                                     ${escapeHtml(expiration)}
+                                </div>
+
+                                <div class="decision-generated">
+                                    ${escapeHtml(signalGeneratedTime)}
                                 </div>
 
                                 <div class="decision-strategy">
@@ -5957,7 +6332,7 @@
 
 
         scannerStatus.textContent =
-            "Ready | Auto Scan starts with the server | waiting for first automatic scan";
+            "Ready | checking Auto Scan status";
         refreshPerformanceStats();
         setInterval(refreshPerformanceStats, 30000);
 
@@ -6005,15 +6380,55 @@
             } catch (_) {}
         }
 
+        function renderAutoScanControl(d) {
+            const badge = document.querySelector('.auto-scanner-badge');
+            const enabled = Boolean(d && d.enabled);
+            if (autoScanToggle) {
+                autoScanToggle.classList.toggle('on', enabled);
+                autoScanToggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
+            }
+            if (autoScanToggleLabel) autoScanToggleLabel.textContent = enabled ? 'AUTO SCAN ON' : 'AUTO SCAN OFF';
+            if (badge) {
+                if (enabled) {
+                    const next = d.nextAt ? new Date(d.nextAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '--:--';
+                    badge.textContent = `● AUTO SCAN: ON · ${d.intervalMinutes} min · Next ${next}`;
+                } else {
+                    badge.textContent = '○ AUTO SCAN: OFF · Manual SCAN remains available';
+                }
+            }
+        }
+
         async function refreshAutoScanStatus() {
             try {
                 const r = await fetch('/api/auto-scan', {cache:'no-store'});
                 const d = await r.json();
-                const badge = document.querySelector('.auto-scanner-badge');
-                if (!badge || !d.enabled) return;
-                const next = d.nextAt ? new Date(d.nextAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '--:--';
-                badge.textContent = `● AUTO SCAN: ON · ${d.intervalMinutes} min · Next ${next}`;
+                renderAutoScanControl(d);
             } catch (_) {}
+        }
+
+        if (autoScanToggle) {
+            autoScanToggle.addEventListener('click', async () => {
+                const nextEnabled = autoScanToggle.getAttribute('aria-checked') !== 'true';
+                autoScanToggle.disabled = true;
+                try {
+                    const r = await fetch('/api/auto-scan/toggle', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({enabled: nextEnabled})
+                    });
+                    const d = await r.json();
+                    if (!r.ok || d.status !== 'ok') throw new Error(d.error || 'Auto Scan toggle failed');
+                    renderAutoScanControl(d);
+                    scannerStatus.textContent = nextEnabled
+                        ? 'Auto Scan enabled. Manual SCAN is also available.'
+                        : 'Auto Scan disabled. Manual SCAN remains available.';
+                } catch (error) {
+                    scannerStatus.textContent = `Auto Scan toggle error: ${error.message}`;
+                    await refreshAutoScanStatus();
+                } finally {
+                    autoScanToggle.disabled = false;
+                }
+            });
         }
         refreshAutoScanStatus();
         setInterval(refreshAutoScanStatus, 15000);
